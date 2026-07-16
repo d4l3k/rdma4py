@@ -43,3 +43,19 @@ markers = [
     "gpu: requires a CUDA GPU and torch (GPUDirect)",
 ]
 testpaths = ["tests"]
+
+# Single abi3 wheel per platform (works on CPython 3.9+). The extension is
+# built against rdma-core headers but dlopens libibverbs at runtime, so the
+# build image only needs the -devel headers; the wheel has no external NEEDED
+# library and is trivially manylinux-compliant.
+[tool.cibuildwheel]
+build = "cp39-abi3"
+build-frontend = "build"
+skip = ["*-musllinux*"]
+test-requires = ["pytest", "numpy"]
+# Hardware/GPU tests self-skip when no NIC/CUDA is present in CI.
+test-command = "pytest -rs -m 'not gpu' {project}/tests"
+
+[tool.cibuildwheel.linux]
+# manylinux images are AlmaLinux-based (dnf/yum).
+before-all = "dnf install -y rdma-core-devel || yum install -y rdma-core-devel"

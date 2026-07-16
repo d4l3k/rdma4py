@@ -237,63 +237,15 @@ cdef extern from "infiniband/verbs.h" nogil:
         _async_element element
         int event_type
 
-    # --- device / context management ---
-    ibv_device **ibv_get_device_list(int *num_devices)
-    void ibv_free_device_list(ibv_device **list)
-    const char *ibv_get_device_name(ibv_device *device)
-    uint64_t ibv_get_device_guid(ibv_device *device)
-    ibv_context *ibv_open_device(ibv_device *device)
-    int ibv_close_device(ibv_context *context)
-    int ibv_query_device(ibv_context *context, ibv_device_attr *device_attr)
-    int ___ibv_query_port(ibv_context *context, uint8_t port_num,
-                          ibv_port_attr *port_attr)
-    int ibv_query_gid(ibv_context *context, uint8_t port_num, int index,
-                      ibv_gid *gid)
-
-    # --- protection domain / memory region ---
-    ibv_pd *ibv_alloc_pd(ibv_context *context)
-    int ibv_dealloc_pd(ibv_pd *pd)
-    ibv_mr *ibv_reg_mr_iova2(ibv_pd *pd, void *addr, size_t length,
-                             uint64_t iova, unsigned int access)
-    ibv_mr *ibv_reg_dmabuf_mr(ibv_pd *pd, uint64_t offset, size_t length,
-                              uint64_t iova, int fd, int access)
-    int ibv_dereg_mr(ibv_mr *mr)
-
-    # --- completion ---
-    ibv_comp_channel *ibv_create_comp_channel(ibv_context *context)
-    int ibv_destroy_comp_channel(ibv_comp_channel *channel)
-    ibv_cq *ibv_create_cq(ibv_context *context, int cqe, void *cq_context,
-                          ibv_comp_channel *channel, int comp_vector)
-    int ibv_destroy_cq(ibv_cq *cq)
-    int ibv_get_cq_event(ibv_comp_channel *channel, ibv_cq **cq,
-                         void **cq_context)
-    void ibv_ack_cq_events(ibv_cq *cq, unsigned int nevents)
+    # --- data-path fast paths ---
+    # These are ``static inline`` in verbs.h: they dispatch through the
+    # provider function-pointer table on the context and reference NO exported
+    # symbol, so they compile directly into this extension. Everything else is
+    # resolved at runtime via dlopen/dlsym (see _ibverbs.pyx) so the extension
+    # does not hard-link libibverbs.
     int ibv_poll_cq(ibv_cq *cq, int num_entries, ibv_wc *wc)
     int ibv_req_notify_cq(ibv_cq *cq, int solicited_only)
-
-    # --- queue pair ---
-    ibv_qp *ibv_create_qp(ibv_pd *pd, ibv_qp_init_attr *qp_init_attr)
-    int ibv_destroy_qp(ibv_qp *qp)
-    int ibv_modify_qp(ibv_qp *qp, ibv_qp_attr *attr, int attr_mask)
-    int ibv_query_qp(ibv_qp *qp, ibv_qp_attr *attr, int attr_mask,
-                     ibv_qp_init_attr *init_attr)
     int ibv_post_send(ibv_qp *qp, ibv_send_wr *wr, ibv_send_wr **bad_wr)
     int ibv_post_recv(ibv_qp *qp, ibv_recv_wr *wr, ibv_recv_wr **bad_wr)
-
-    # --- address handle ---
-    ibv_ah *ibv_create_ah(ibv_pd *pd, ibv_ah_attr *attr)
-    int ibv_destroy_ah(ibv_ah *ah)
-
-    # --- shared receive queue ---
-    ibv_srq *ibv_create_srq(ibv_pd *pd, ibv_srq_init_attr *srq_init_attr)
-    int ibv_destroy_srq(ibv_srq *srq)
-    int ibv_modify_srq(ibv_srq *srq, ibv_srq_attr *srq_attr, int srq_attr_mask)
-    int ibv_query_srq(ibv_srq *srq, ibv_srq_attr *srq_attr)
     int ibv_post_srq_recv(ibv_srq *srq, ibv_recv_wr *recv_wr,
                           ibv_recv_wr **bad_recv_wr)
-
-    # --- async events / string helpers ---
-    int ibv_get_async_event(ibv_context *context, ibv_async_event *event)
-    void ibv_ack_async_event(ibv_async_event *event)
-    const char *ibv_event_type_str(int event)
-    const char *ibv_wc_status_str(int status)

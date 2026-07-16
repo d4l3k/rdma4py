@@ -41,19 +41,39 @@ uv pip install --python ../.venv -e . --no-build-isolation   # rebuild after .py
 - Editing `.pyx` / `.pxd`: **must rebuild** (`uv pip install -e . --no-build-isolation`).
 - The Cython-generated `_ibverbs.c` and the `.so` are git-ignored.
 
+## Linkage model: dlopen, not direct link (portability)
+
+The extension is compiled against the rdma-core headers but is **not** linked
+against `libibverbs`. `setup.py` uses `pkg-config --cflags-only-I` for the
+header path and links only `libdl`. At import, `_load_libibverbs()` in
+`_ibverbs.pyx` `dlopen`s `libibverbs.so.1` (RTLD_NOW|RTLD_GLOBAL) and `dlsym`s
+each exported verb into a typed function pointer (`_v_*`). Consequences:
+
+- The `.so`'s only `NEEDED` is `libc` — no external dep for `auditwheel`, so a
+  clean manylinux wheel; missing libibverbs → clean `ImportError`.
+- `ibv_reg_dmabuf_mr` is loaded **optionally** (may be NULL on rdma-core < 34);
+  `PD.reg_dmabuf_mr` raises a clear error if it's unavailable.
+- Built as **abi3** (Limited API, floor 3.9) → one wheel for CPython 3.9+.
+- Only the five `static inline` data-path verbs
+  (`ibv_post_send/recv`, `ibv_poll_cq`, `ibv_req_notify_cq`,
+  `ibv_post_srq_recv`) are still declared extern-from-header: they dispatch
+  through the provider op table and reference no exported symbol, so they
+  compile inline with zero symbol resolution (the fast path stays fast). This
+  is why a pure-ctypes binding is a poor fit and we use a compiled extension.
+
+When adding a verb: declare its function-pointer type (`fp_*`), a `_v_*`
+global, and a `_req_sym`/`dlsym` line in `_load_libibverbs`, then call `_v_*`.
+
 ## How the C API is declared (`_libverbs.pxd`)
 
 - Structs are declared **partially** — only the fields we touch. Cython trusts
   the real header for layout, so this is safe even for stack-allocated structs.
 - Enum-typed fields/params are declared as plain `int` (C converts implicitly);
   this keeps the file small and robust across rdma-core versions.
-- `ibv_reg_mr` and `ibv_query_port` are **macros** in the header. We bind the
-  underlying real symbols instead: `ibv_reg_mr_iova2` (with `iova == addr`) and
-  `___ibv_query_port`.
-- The fast-path functions (`ibv_post_send/recv`, `ibv_poll_cq`,
-  `ibv_req_notify_cq`) are `static inline`; declaring them as extern functions
-  lets the C compiler inline them at the call site — this is *why* we use a
-  compiled extension rather than ctypes.
+- `ibv_reg_mr` and `ibv_query_port` are **macros** in the header, so we never
+  reference them by name: we `dlsym` `ibv_reg_mr_iova2` (called with
+  `iova == addr`) and the raw `ibv_query_port` symbol (called with a zeroed
+  attr struct, which is what the header's `___ibv_query_port` compat shim does).
 - `ibv_send_wr.wr` is a C **union** (`rdma` / `atomic` / `ud`); declared with
   named nested `cdef struct`s that are never emitted (extern), only used for
   field-access type-checking.

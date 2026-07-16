@@ -10,11 +10,171 @@ garbage collector cannot free a parent before its children. Hot paths
 import os
 
 from libc.errno cimport errno
+from libc.stddef cimport size_t
 from libc.stdint cimport uint8_t, uint16_t, uint32_t, uint64_t, uintptr_t
 from libc.stdlib cimport calloc, free
 from libc.string cimport memset, memcpy, strcmp
 
 cimport ibverbs._libverbs as c
+
+
+# --------------------------------------------------------------------------- #
+# Runtime binding to libibverbs (dlopen/dlsym)
+# --------------------------------------------------------------------------- #
+# The exported (non-inline) verbs are resolved at import time from
+# libibverbs.so.1 via dlopen instead of being hard-linked. This means the
+# extension has no external NEEDED dependency (trivially manylinux-compliant),
+# gives a clean ImportError when libibverbs is absent, and tolerates an older
+# libibverbs by treating newer verbs (e.g. ibv_reg_dmabuf_mr) as optional. The
+# data-path fast paths (post_send/poll_cq/...) remain compiled inline and
+# dispatch through the provider op table, so they need no symbol resolution.
+
+cdef extern from "dlfcn.h" nogil:
+    void *dlopen(const char *filename, int flag)
+    void *dlsym(void *handle, const char *symbol)
+    char *dlerror()
+    int RTLD_NOW
+    int RTLD_GLOBAL
+
+ctypedef c.ibv_device **(*fp_get_device_list)(int *) noexcept nogil
+ctypedef void (*fp_free_device_list)(c.ibv_device **) noexcept nogil
+ctypedef const char *(*fp_get_device_name)(c.ibv_device *) noexcept nogil
+ctypedef uint64_t (*fp_get_device_guid)(c.ibv_device *) noexcept nogil
+ctypedef c.ibv_context *(*fp_open_device)(c.ibv_device *) noexcept nogil
+ctypedef int (*fp_close_device)(c.ibv_context *) noexcept nogil
+ctypedef int (*fp_query_device)(c.ibv_context *, c.ibv_device_attr *) noexcept nogil
+ctypedef int (*fp_query_port)(c.ibv_context *, uint8_t, c.ibv_port_attr *) noexcept nogil
+ctypedef int (*fp_query_gid)(c.ibv_context *, uint8_t, int, c.ibv_gid *) noexcept nogil
+ctypedef c.ibv_pd *(*fp_alloc_pd)(c.ibv_context *) noexcept nogil
+ctypedef int (*fp_dealloc_pd)(c.ibv_pd *) noexcept nogil
+ctypedef c.ibv_mr *(*fp_reg_mr_iova2)(c.ibv_pd *, void *, size_t, uint64_t, unsigned int) noexcept nogil
+ctypedef c.ibv_mr *(*fp_reg_dmabuf_mr)(c.ibv_pd *, uint64_t, size_t, uint64_t, int, int) noexcept nogil
+ctypedef int (*fp_dereg_mr)(c.ibv_mr *) noexcept nogil
+ctypedef c.ibv_comp_channel *(*fp_create_comp_channel)(c.ibv_context *) noexcept nogil
+ctypedef int (*fp_destroy_comp_channel)(c.ibv_comp_channel *) noexcept nogil
+ctypedef c.ibv_cq *(*fp_create_cq)(c.ibv_context *, int, void *, c.ibv_comp_channel *, int) noexcept nogil
+ctypedef int (*fp_destroy_cq)(c.ibv_cq *) noexcept nogil
+ctypedef int (*fp_get_cq_event)(c.ibv_comp_channel *, c.ibv_cq **, void **) noexcept nogil
+ctypedef void (*fp_ack_cq_events)(c.ibv_cq *, unsigned int) noexcept nogil
+ctypedef c.ibv_qp *(*fp_create_qp)(c.ibv_pd *, c.ibv_qp_init_attr *) noexcept nogil
+ctypedef int (*fp_destroy_qp)(c.ibv_qp *) noexcept nogil
+ctypedef int (*fp_modify_qp)(c.ibv_qp *, c.ibv_qp_attr *, int) noexcept nogil
+ctypedef int (*fp_query_qp)(c.ibv_qp *, c.ibv_qp_attr *, int, c.ibv_qp_init_attr *) noexcept nogil
+ctypedef c.ibv_ah *(*fp_create_ah)(c.ibv_pd *, c.ibv_ah_attr *) noexcept nogil
+ctypedef int (*fp_destroy_ah)(c.ibv_ah *) noexcept nogil
+ctypedef c.ibv_srq *(*fp_create_srq)(c.ibv_pd *, c.ibv_srq_init_attr *) noexcept nogil
+ctypedef int (*fp_destroy_srq)(c.ibv_srq *) noexcept nogil
+ctypedef int (*fp_modify_srq)(c.ibv_srq *, c.ibv_srq_attr *, int) noexcept nogil
+ctypedef int (*fp_query_srq)(c.ibv_srq *, c.ibv_srq_attr *) noexcept nogil
+ctypedef int (*fp_get_async_event)(c.ibv_context *, c.ibv_async_event *) noexcept nogil
+ctypedef void (*fp_ack_async_event)(c.ibv_async_event *) noexcept nogil
+ctypedef const char *(*fp_str_from_int)(int) noexcept nogil
+
+cdef void *_libhandle = NULL
+cdef fp_get_device_list _v_get_device_list = NULL
+cdef fp_free_device_list _v_free_device_list = NULL
+cdef fp_get_device_name _v_get_device_name = NULL
+cdef fp_get_device_guid _v_get_device_guid = NULL
+cdef fp_open_device _v_open_device = NULL
+cdef fp_close_device _v_close_device = NULL
+cdef fp_query_device _v_query_device = NULL
+cdef fp_query_port _v_query_port = NULL
+cdef fp_query_gid _v_query_gid = NULL
+cdef fp_alloc_pd _v_alloc_pd = NULL
+cdef fp_dealloc_pd _v_dealloc_pd = NULL
+cdef fp_reg_mr_iova2 _v_reg_mr_iova2 = NULL
+cdef fp_reg_dmabuf_mr _v_reg_dmabuf_mr = NULL
+cdef fp_dereg_mr _v_dereg_mr = NULL
+cdef fp_create_comp_channel _v_create_comp_channel = NULL
+cdef fp_destroy_comp_channel _v_destroy_comp_channel = NULL
+cdef fp_create_cq _v_create_cq = NULL
+cdef fp_destroy_cq _v_destroy_cq = NULL
+cdef fp_get_cq_event _v_get_cq_event = NULL
+cdef fp_ack_cq_events _v_ack_cq_events = NULL
+cdef fp_create_qp _v_create_qp = NULL
+cdef fp_destroy_qp _v_destroy_qp = NULL
+cdef fp_modify_qp _v_modify_qp = NULL
+cdef fp_query_qp _v_query_qp = NULL
+cdef fp_create_ah _v_create_ah = NULL
+cdef fp_destroy_ah _v_destroy_ah = NULL
+cdef fp_create_srq _v_create_srq = NULL
+cdef fp_destroy_srq _v_destroy_srq = NULL
+cdef fp_modify_srq _v_modify_srq = NULL
+cdef fp_query_srq _v_query_srq = NULL
+cdef fp_get_async_event _v_get_async_event = NULL
+cdef fp_ack_async_event _v_ack_async_event = NULL
+cdef fp_str_from_int _v_event_type_str = NULL
+cdef fp_str_from_int _v_wc_status_str = NULL
+
+
+cdef void *_req_sym(void *h, const char *name) except NULL:
+    cdef void *sym = dlsym(h, name)
+    if sym is NULL:
+        raise ImportError("libibverbs is missing required symbol %s"
+                          % (<bytes>name).decode())
+    return sym
+
+
+cdef int _load_libibverbs() except -1:
+    global _libhandle
+    global _v_get_device_list, _v_free_device_list, _v_get_device_name
+    global _v_get_device_guid, _v_open_device, _v_close_device, _v_query_device
+    global _v_query_port, _v_query_gid, _v_alloc_pd, _v_dealloc_pd
+    global _v_reg_mr_iova2, _v_reg_dmabuf_mr, _v_dereg_mr
+    global _v_create_comp_channel, _v_destroy_comp_channel, _v_create_cq
+    global _v_destroy_cq, _v_get_cq_event, _v_ack_cq_events, _v_create_qp
+    global _v_destroy_qp, _v_modify_qp, _v_query_qp, _v_create_ah, _v_destroy_ah
+    global _v_create_srq, _v_destroy_srq, _v_modify_srq, _v_query_srq
+    global _v_get_async_event, _v_ack_async_event, _v_event_type_str
+    global _v_wc_status_str
+    cdef void *h
+    cdef char *e
+    h = dlopen(b"libibverbs.so.1", RTLD_NOW | RTLD_GLOBAL)
+    if h is NULL:
+        e = dlerror()
+        raise ImportError(
+            "could not load libibverbs.so.1 - install rdma-core / libibverbs "
+            "(%s)" % ((<bytes>e).decode() if e is not NULL else "not found"))
+    _libhandle = h
+    _v_get_device_list = <fp_get_device_list>_req_sym(h, b"ibv_get_device_list")
+    _v_free_device_list = <fp_free_device_list>_req_sym(h, b"ibv_free_device_list")
+    _v_get_device_name = <fp_get_device_name>_req_sym(h, b"ibv_get_device_name")
+    _v_get_device_guid = <fp_get_device_guid>_req_sym(h, b"ibv_get_device_guid")
+    _v_open_device = <fp_open_device>_req_sym(h, b"ibv_open_device")
+    _v_close_device = <fp_close_device>_req_sym(h, b"ibv_close_device")
+    _v_query_device = <fp_query_device>_req_sym(h, b"ibv_query_device")
+    _v_query_port = <fp_query_port>_req_sym(h, b"ibv_query_port")
+    _v_query_gid = <fp_query_gid>_req_sym(h, b"ibv_query_gid")
+    _v_alloc_pd = <fp_alloc_pd>_req_sym(h, b"ibv_alloc_pd")
+    _v_dealloc_pd = <fp_dealloc_pd>_req_sym(h, b"ibv_dealloc_pd")
+    _v_reg_mr_iova2 = <fp_reg_mr_iova2>_req_sym(h, b"ibv_reg_mr_iova2")
+    _v_dereg_mr = <fp_dereg_mr>_req_sym(h, b"ibv_dereg_mr")
+    _v_create_comp_channel = <fp_create_comp_channel>_req_sym(h, b"ibv_create_comp_channel")
+    _v_destroy_comp_channel = <fp_destroy_comp_channel>_req_sym(h, b"ibv_destroy_comp_channel")
+    _v_create_cq = <fp_create_cq>_req_sym(h, b"ibv_create_cq")
+    _v_destroy_cq = <fp_destroy_cq>_req_sym(h, b"ibv_destroy_cq")
+    _v_get_cq_event = <fp_get_cq_event>_req_sym(h, b"ibv_get_cq_event")
+    _v_ack_cq_events = <fp_ack_cq_events>_req_sym(h, b"ibv_ack_cq_events")
+    _v_create_qp = <fp_create_qp>_req_sym(h, b"ibv_create_qp")
+    _v_destroy_qp = <fp_destroy_qp>_req_sym(h, b"ibv_destroy_qp")
+    _v_modify_qp = <fp_modify_qp>_req_sym(h, b"ibv_modify_qp")
+    _v_query_qp = <fp_query_qp>_req_sym(h, b"ibv_query_qp")
+    _v_create_ah = <fp_create_ah>_req_sym(h, b"ibv_create_ah")
+    _v_destroy_ah = <fp_destroy_ah>_req_sym(h, b"ibv_destroy_ah")
+    _v_create_srq = <fp_create_srq>_req_sym(h, b"ibv_create_srq")
+    _v_destroy_srq = <fp_destroy_srq>_req_sym(h, b"ibv_destroy_srq")
+    _v_modify_srq = <fp_modify_srq>_req_sym(h, b"ibv_modify_srq")
+    _v_query_srq = <fp_query_srq>_req_sym(h, b"ibv_query_srq")
+    _v_get_async_event = <fp_get_async_event>_req_sym(h, b"ibv_get_async_event")
+    _v_ack_async_event = <fp_ack_async_event>_req_sym(h, b"ibv_ack_async_event")
+    _v_event_type_str = <fp_str_from_int>_req_sym(h, b"ibv_event_type_str")
+    _v_wc_status_str = <fp_str_from_int>_req_sym(h, b"ibv_wc_status_str")
+    # Optional: added in rdma-core 34 (IBVERBS_1.12). Absent on older systems.
+    _v_reg_dmabuf_mr = <fp_reg_dmabuf_mr>dlsym(h, b"ibv_reg_dmabuf_mr")
+    return 0
+
+
+_load_libibverbs()
 
 
 # --------------------------------------------------------------------------- #
@@ -41,11 +201,13 @@ cdef int _fail(str op) except -1:
 # Linkage smoke test (kept for the import test)
 # --------------------------------------------------------------------------- #
 def _linked() -> bool:
-    cdef int num = 0
-    cdef c.ibv_device **lst = c.ibv_get_device_list(&num)
-    if lst is not NULL:
-        c.ibv_free_device_list(lst)
-    return True
+    """Return True if libibverbs was loaded at import (always True if imported)."""
+    return _libhandle is not NULL
+
+
+def _has_dmabuf() -> bool:
+    """Return True if this libibverbs provides ``ibv_reg_dmabuf_mr`` (rdma-core >= 34)."""
+    return _v_reg_dmabuf_mr is not NULL
 
 
 # --------------------------------------------------------------------------- #
@@ -156,7 +318,7 @@ cdef class WC:
 
     @property
     def status_str(self) -> str:
-        return c.ibv_wc_status_str(self.status).decode()
+        return _v_wc_status_str(self.status).decode()
 
     def raise_for_status(self):
         """Raise :class:`VerbsError` if this completion did not succeed."""
@@ -342,7 +504,7 @@ cdef class Device:
     def open(self) -> "Context":
         """Open this device, returning a :class:`Context`."""
         cdef int num = 0
-        cdef c.ibv_device **lst = c.ibv_get_device_list(&num)
+        cdef c.ibv_device **lst = _v_get_device_list(&num)
         cdef c.ibv_context *ctx = NULL
         cdef bytes want = self.name.encode()
         cdef int i
@@ -350,11 +512,11 @@ cdef class Device:
             _fail("ibv_get_device_list")
         try:
             for i in range(num):
-                if strcmp(c.ibv_get_device_name(lst[i]), <char*>want) == 0:
-                    ctx = c.ibv_open_device(lst[i])
+                if strcmp(_v_get_device_name(lst[i]), <char*>want) == 0:
+                    ctx = _v_open_device(lst[i])
                     break
         finally:
-            c.ibv_free_device_list(lst)
+            _v_free_device_list(lst)
         if ctx is NULL:
             raise VerbsError("ibv_open_device(%s)" % self.name, errno)
         return Context._wrap(ctx, self.name)
@@ -366,18 +528,18 @@ cdef class Device:
 def get_device_list() -> list:
     """Return the list of :class:`Device` objects present on this host."""
     cdef int num = 0
-    cdef c.ibv_device **lst = c.ibv_get_device_list(&num)
+    cdef c.ibv_device **lst = _v_get_device_list(&num)
     cdef int i
     if lst is NULL:
         _fail("ibv_get_device_list")
     out = []
     try:
         for i in range(num):
-            name = c.ibv_get_device_name(lst[i]).decode()
-            guid = c.ibv_get_device_guid(lst[i])
+            name = _v_get_device_name(lst[i]).decode()
+            guid = _v_get_device_guid(lst[i])
             out.append(Device(name, guid))
     finally:
-        c.ibv_free_device_list(lst)
+        _v_free_device_list(lst)
     return out
 
 
@@ -415,7 +577,7 @@ cdef class Context:
     def query_device(self) -> DeviceAttr:
         self._ensure()
         cdef c.ibv_device_attr a
-        if c.ibv_query_device(self._ctx, &a) != 0:
+        if _v_query_device(self._ctx, &a) != 0:
             _fail("ibv_query_device")
         cdef DeviceAttr r = DeviceAttr.__new__(DeviceAttr)
         r.fw_ver = a.fw_ver.decode() if a.fw_ver[0] != 0 else ""
@@ -445,7 +607,7 @@ cdef class Context:
         self._ensure()
         cdef c.ibv_port_attr a
         memset(&a, 0, sizeof(a))
-        if c.___ibv_query_port(self._ctx, <uint8_t>port_num, &a) != 0:
+        if _v_query_port(self._ctx, <uint8_t>port_num, &a) != 0:
             _fail("ibv_query_port")
         cdef PortAttr r = PortAttr.__new__(PortAttr)
         r.state = a.state
@@ -466,20 +628,20 @@ cdef class Context:
     def query_gid(self, int port_num, int index) -> Gid:
         self._ensure()
         cdef c.ibv_gid g
-        if c.ibv_query_gid(self._ctx, <uint8_t>port_num, index, &g) != 0:
+        if _v_query_gid(self._ctx, <uint8_t>port_num, index, &g) != 0:
             _fail("ibv_query_gid")
         return Gid(bytes(bytearray(g.raw[:16])))
 
     def alloc_pd(self) -> "PD":
         self._ensure()
-        cdef c.ibv_pd *pd = c.ibv_alloc_pd(self._ctx)
+        cdef c.ibv_pd *pd = _v_alloc_pd(self._ctx)
         if pd is NULL:
             _fail("ibv_alloc_pd")
         return PD._wrap(pd, self)
 
     def create_comp_channel(self) -> "CompChannel":
         self._ensure()
-        cdef c.ibv_comp_channel *ch = c.ibv_create_comp_channel(self._ctx)
+        cdef c.ibv_comp_channel *ch = _v_create_comp_channel(self._ctx)
         if ch is NULL:
             _fail("ibv_create_comp_channel")
         return CompChannel._wrap(ch, self)
@@ -494,7 +656,7 @@ cdef class Context:
         cdef CQ cq = CQ.__new__(CQ)
         cq.context = self
         cq.channel = ch
-        cq._cq = c.ibv_create_cq(self._ctx, cqe, <void*>cq, chp, comp_vector)
+        cq._cq = _v_create_cq(self._ctx, cqe, <void*>cq, chp, comp_vector)
         if cq._cq is NULL:
             _fail("ibv_create_cq")
         return cq
@@ -504,7 +666,7 @@ cdef class Context:
         cdef AsyncEvent ev = AsyncEvent.__new__(AsyncEvent)
         cdef int rc
         with nogil:
-            rc = c.ibv_get_async_event(self._ctx, &ev._ev)
+            rc = _v_get_async_event(self._ctx, &ev._ev)
         if rc != 0:
             _fail("ibv_get_async_event")
         ev._acked = False
@@ -513,17 +675,17 @@ cdef class Context:
 
     def ack_async_event(self, AsyncEvent ev):
         if not ev._acked:
-            c.ibv_ack_async_event(&ev._ev)
+            _v_ack_async_event(&ev._ev)
             ev._acked = True
 
     def close(self):
         if self._ctx is not NULL:
-            c.ibv_close_device(self._ctx)
+            _v_close_device(self._ctx)
             self._ctx = NULL
 
     def __dealloc__(self):
         if self._ctx is not NULL:
-            c.ibv_close_device(self._ctx)
+            _v_close_device(self._ctx)
             self._ctx = NULL
 
     def __enter__(self):
@@ -546,7 +708,7 @@ cdef class AsyncEvent:
 
     @property
     def event_type_str(self) -> str:
-        return c.ibv_event_type_str(self.event_type).decode()
+        return _v_event_type_str(self.event_type).decode()
 
     def __repr__(self):
         return "AsyncEvent(%s)" % self.event_type_str
@@ -585,7 +747,7 @@ cdef class PD:
         cdef unsigned int acc = <unsigned int>access
         cdef c.ibv_mr *mr
         with nogil:
-            mr = c.ibv_reg_mr_iova2(self._pd, <void*><uintptr_t>a, ln, a, acc)
+            mr = _v_reg_mr_iova2(self._pd, <void*><uintptr_t>a, ln, a, acc)
         if mr is NULL:
             _fail("ibv_reg_mr")
         return MR._wrap(mr, self)
@@ -593,12 +755,16 @@ cdef class PD:
     def reg_dmabuf_mr(self, offset, length, iova, int fd, int access) -> "MR":
         """Register a dma-buf backed region (modern GPUDirect path)."""
         self._ensure()
+        if _v_reg_dmabuf_mr is NULL:
+            raise RuntimeError(
+                "ibv_reg_dmabuf_mr is unavailable: this libibverbs predates "
+                "rdma-core 34. Use reg_mr with nvidia_peermem instead.")
         cdef c.ibv_mr *mr
         cdef uint64_t off = <uint64_t>int(offset)
         cdef size_t ln = <size_t>length
         cdef uint64_t iv = <uint64_t>int(iova)
         with nogil:
-            mr = c.ibv_reg_dmabuf_mr(self._pd, off, ln, iv, fd, access)
+            mr = _v_reg_dmabuf_mr(self._pd, off, ln, iv, fd, access)
         if mr is NULL:
             _fail("ibv_reg_dmabuf_mr")
         return MR._wrap(mr, self)
@@ -622,7 +788,7 @@ cdef class PD:
         a.cap.max_send_sge = init_attr.max_send_sge
         a.cap.max_recv_sge = init_attr.max_recv_sge
         a.cap.max_inline_data = init_attr.max_inline_data
-        cdef c.ibv_qp *qp = c.ibv_create_qp(self._pd, &a)
+        cdef c.ibv_qp *qp = _v_create_qp(self._pd, &a)
         if qp is NULL:
             _fail("ibv_create_qp")
         return QP._wrap(qp, self, scq, rcq, srq)
@@ -631,7 +797,7 @@ cdef class PD:
         self._ensure()
         cdef c.ibv_ah_attr a
         _fill_ah_attr(&a, attr)
-        cdef c.ibv_ah *ah = c.ibv_create_ah(self._pd, &a)
+        cdef c.ibv_ah *ah = _v_create_ah(self._pd, &a)
         if ah is NULL:
             _fail("ibv_create_ah")
         return AH._wrap(ah, self)
@@ -643,19 +809,19 @@ cdef class PD:
         a.attr.max_wr = max_wr
         a.attr.max_sge = max_sge
         a.attr.srq_limit = srq_limit
-        cdef c.ibv_srq *srq = c.ibv_create_srq(self._pd, &a)
+        cdef c.ibv_srq *srq = _v_create_srq(self._pd, &a)
         if srq is NULL:
             _fail("ibv_create_srq")
         return SRQ._wrap(srq, self)
 
     def close(self):
         if self._pd is not NULL:
-            c.ibv_dealloc_pd(self._pd)
+            _v_dealloc_pd(self._pd)
             self._pd = NULL
 
     def __dealloc__(self):
         if self._pd is not NULL:
-            c.ibv_dealloc_pd(self._pd)
+            _v_dealloc_pd(self._pd)
             self._pd = NULL
 
     def __enter__(self):
@@ -701,12 +867,12 @@ cdef class MR:
 
     def close(self):
         if self._mr is not NULL:
-            c.ibv_dereg_mr(self._mr)
+            _v_dereg_mr(self._mr)
             self._mr = NULL
 
     def __dealloc__(self):
         if self._mr is not NULL:
-            c.ibv_dereg_mr(self._mr)
+            _v_dereg_mr(self._mr)
             self._mr = NULL
 
     def __enter__(self):
@@ -750,7 +916,7 @@ cdef class CompChannel:
         cdef void *ctx = NULL
         cdef int rc
         with nogil:
-            rc = c.ibv_get_cq_event(self._chan, &cq, &ctx)
+            rc = _v_get_cq_event(self._chan, &cq, &ctx)
         if rc != 0:
             _fail("ibv_get_cq_event")
         cdef CQ obj = <CQ>ctx
@@ -759,12 +925,12 @@ cdef class CompChannel:
 
     def close(self):
         if self._chan is not NULL:
-            c.ibv_destroy_comp_channel(self._chan)
+            _v_destroy_comp_channel(self._chan)
             self._chan = NULL
 
     def __dealloc__(self):
         if self._chan is not NULL:
-            c.ibv_destroy_comp_channel(self._chan)
+            _v_destroy_comp_channel(self._chan)
             self._chan = NULL
 
     def __enter__(self):
@@ -815,7 +981,7 @@ cdef class CQ:
 
     def ack_events(self, unsigned int nevents=1):
         """Acknowledge ``nevents`` events delivered via the channel."""
-        c.ibv_ack_cq_events(self._cq, nevents)
+        _v_ack_cq_events(self._cq, nevents)
         if <int>nevents <= self._unacked:
             self._unacked -= <int>nevents
         else:
@@ -824,16 +990,16 @@ cdef class CQ:
     def close(self):
         if self._cq is not NULL:
             if self._unacked > 0:
-                c.ibv_ack_cq_events(self._cq, <unsigned int>self._unacked)
+                _v_ack_cq_events(self._cq, <unsigned int>self._unacked)
                 self._unacked = 0
-            c.ibv_destroy_cq(self._cq)
+            _v_destroy_cq(self._cq)
             self._cq = NULL
 
     def __dealloc__(self):
         if self._cq is not NULL:
             if self._unacked > 0:
-                c.ibv_ack_cq_events(self._cq, <unsigned int>self._unacked)
-            c.ibv_destroy_cq(self._cq)
+                _v_ack_cq_events(self._cq, <unsigned int>self._unacked)
+            _v_destroy_cq(self._cq)
             self._cq = NULL
 
     def __enter__(self):
@@ -936,7 +1102,7 @@ cdef class QP:
         cdef c.ibv_qp_attr a
         cdef c.ibv_qp_init_attr ia
         memset(&a, 0, sizeof(a))
-        if c.ibv_query_qp(self._qp, &a, _QP_STATE, &ia) != 0:
+        if _v_query_qp(self._qp, &a, _QP_STATE, &ia) != 0:
             _fail("ibv_query_qp")
         return a.qp_state
 
@@ -946,7 +1112,7 @@ cdef class QP:
         cdef c.ibv_qp_init_attr ia
         memset(&a, 0, sizeof(a))
         memset(&ia, 0, sizeof(ia))
-        if c.ibv_query_qp(self._qp, &a, 0x1FFFFFF, &ia) != 0:
+        if _v_query_qp(self._qp, &a, 0x1FFFFFF, &ia) != 0:
             _fail("ibv_query_qp")
         cdef QPCap cap = QPCap.__new__(QPCap)
         cap.max_send_wr = ia.cap.max_send_wr
@@ -999,7 +1165,7 @@ cdef class QP:
         if "max_dest_rd_atomic" in fields: a.max_dest_rd_atomic = fields["max_dest_rd_atomic"]
         if ah_attr is not None:
             _fill_ah_attr(&a.ah_attr, <AHAttr>ah_attr)
-        if c.ibv_modify_qp(self._qp, &a, attr_mask) != 0:
+        if _v_modify_qp(self._qp, &a, attr_mask) != 0:
             _fail("ibv_modify_qp")
 
     # -- RC/UD state-machine helpers -----------------------------------------
@@ -1018,7 +1184,7 @@ cdef class QP:
         else:
             a.qp_access_flags = access
             mask = _QP_STATE | _QP_PKEY_INDEX | _QP_PORT | _QP_ACCESS_FLAGS
-        if c.ibv_modify_qp(self._qp, &a, mask) != 0:
+        if _v_modify_qp(self._qp, &a, mask) != 0:
             _fail("ibv_modify_qp(->INIT)")
 
     def to_rtr(self, remote, int sgid_index, mtu=None, int hop_limit=1,
@@ -1031,7 +1197,7 @@ cdef class QP:
         memset(&a, 0, sizeof(a))
         a.qp_state = _QPS_RTR
         if self._qp.qp_type == _QPT_UD:
-            if c.ibv_modify_qp(self._qp, &a, _QP_STATE) != 0:
+            if _v_modify_qp(self._qp, &a, _QP_STATE) != 0:
                 _fail("ibv_modify_qp(->RTR)")
             return
         a.path_mtu = int(mtu) if mtu is not None else int(remote.mtu)
@@ -1051,7 +1217,7 @@ cdef class QP:
         a.ah_attr.port_num = <uint8_t>self._port
         mask = (_QP_STATE | _QP_AV | _QP_PATH_MTU | _QP_DEST_QPN | _QP_RQ_PSN
                 | _QP_MAX_DEST_RD_ATOMIC | _QP_MIN_RNR_TIMER)
-        if c.ibv_modify_qp(self._qp, &a, mask) != 0:
+        if _v_modify_qp(self._qp, &a, mask) != 0:
             _fail("ibv_modify_qp(->RTR)")
 
     def to_rts(self, int psn, int timeout=14, int retry_cnt=7, int rnr_retry=7,
@@ -1071,7 +1237,7 @@ cdef class QP:
             a.max_rd_atomic = <uint8_t>max_rd_atomic
             mask = (_QP_STATE | _QP_TIMEOUT | _QP_RETRY_CNT | _QP_RNR_RETRY
                     | _QP_SQ_PSN | _QP_MAX_QP_RD_ATOMIC)
-        if c.ibv_modify_qp(self._qp, &a, mask) != 0:
+        if _v_modify_qp(self._qp, &a, mask) != 0:
             _fail("ibv_modify_qp(->RTS)")
 
     def post_send(self, wrs):
@@ -1088,12 +1254,12 @@ cdef class QP:
 
     def close(self):
         if self._qp is not NULL:
-            c.ibv_destroy_qp(self._qp)
+            _v_destroy_qp(self._qp)
             self._qp = NULL
 
     def __dealloc__(self):
         if self._qp is not NULL:
-            c.ibv_destroy_qp(self._qp)
+            _v_destroy_qp(self._qp)
             self._qp = NULL
 
     def __enter__(self):
@@ -1247,12 +1413,12 @@ cdef class AH:
 
     def close(self):
         if self._ah is not NULL:
-            c.ibv_destroy_ah(self._ah)
+            _v_destroy_ah(self._ah)
             self._ah = NULL
 
     def __dealloc__(self):
         if self._ah is not NULL:
-            c.ibv_destroy_ah(self._ah)
+            _v_destroy_ah(self._ah)
             self._ah = NULL
 
 
@@ -1277,7 +1443,7 @@ cdef class SRQ:
     def query(self):
         cdef c.ibv_srq_attr a
         memset(&a, 0, sizeof(a))
-        if c.ibv_query_srq(self._srq, &a) != 0:
+        if _v_query_srq(self._srq, &a) != 0:
             _fail("ibv_query_srq")
         return {"max_wr": a.max_wr, "max_sge": a.max_sge, "srq_limit": a.srq_limit}
 
@@ -1291,17 +1457,17 @@ cdef class SRQ:
         if srq_limit is not None:
             a.srq_limit = srq_limit
             mask |= 2  # IBV_SRQ_LIMIT
-        if c.ibv_modify_srq(self._srq, &a, mask) != 0:
+        if _v_modify_srq(self._srq, &a, mask) != 0:
             _fail("ibv_modify_srq")
 
     def close(self):
         if self._srq is not NULL:
-            c.ibv_destroy_srq(self._srq)
+            _v_destroy_srq(self._srq)
             self._srq = NULL
 
     def __dealloc__(self):
         if self._srq is not NULL:
-            c.ibv_destroy_srq(self._srq)
+            _v_destroy_srq(self._srq)
             self._srq = NULL
 
 

@@ -11,31 +11,53 @@ path (`post_send` / `post_recv` / `poll`) compiles to direct C calls and
 releases the GIL, and so the `static inline` verbs fast-path functions are
 called correctly (they can't be reached through `dlsym`).
 
-- **No runtime dependencies.** Only libibverbs at load time.
+- **No runtime dependencies.** Only libibverbs, which is `dlopen`ed at import.
 - **No torch / CUDA linkage.** GPUDirect works by registering an integer
   device address or an exported dma-buf fd; CUDA stays entirely in your code.
-- Targets CPython 3.9+ on Linux.
+- **One `abi3` wheel for all of CPython 3.9+** on Linux.
+
+## Portability
+
+The extension does **not** link `libibverbs`. It is compiled against the
+rdma-core headers (for struct layouts and the `static inline` data-path verbs)
+but resolves the exported verbs at import time with `dlopen`/`dlsym`. As a
+result:
+
+- The compiled module's only `NEEDED` library is `libc` — no external
+  dependency for `auditwheel`, so a single **manylinux** wheel is portable
+  across distros.
+- It is built against the **CPython Limited API (abi3)**, so one wheel works on
+  CPython **3.9 through 3.14+** — no per-version builds.
+- A missing `libibverbs` yields a clean `ImportError`, not a loader crash.
+- Newer verbs are optional: `ibv_reg_dmabuf_mr` (rdma-core ≥ 34) is loaded if
+  present and only errors if you actually call `reg_dmabuf_mr`, so the wheel
+  still imports on older systems.
+
+At runtime you only need `libibverbs.so.1` (any `rdma-core` from the last
+several years). The data path (`post_send`/`poll`/…) stays compiled inline and
+dispatches through the provider op table, so `dlopen` costs nothing on the hot
+path.
 
 ## Requirements
 
 - Linux with an RDMA-capable NIC (tested on Mellanox/NVIDIA **mlx5**, RoCEv2).
-- `libibverbs` at runtime and **`rdma-core` development headers** at build time
-  (`libibverbs-dev` on Debian/Ubuntu, `rdma-core-devel` / `libibverbs-devel` on
-  RHEL/Fedora).
-- A C compiler and Cython (build time only).
+- **Runtime:** `libibverbs.so.1` (`rdma-core` — `libibverbs1` on Debian/Ubuntu,
+  `libibverbs` on RHEL/Fedora). No compiler or headers needed to *use* a wheel.
+- **Build from source only:** a C compiler, Cython, and the `rdma-core`
+  development headers (`libibverbs-dev` / `rdma-core-devel`).
 
 ## Install
 
-From source (until published to PyPI):
-
 ```bash
-# build deps
-pip install "Cython>=3.0" "setuptools>=64" wheel
-# the package
-pip install ./ibverbs           # or: pip install -e ./ibverbs
+pip install ibverbs        # prebuilt abi3 manylinux wheel (once published)
 ```
 
-The extension is compiled against your system `libibverbs` via `pkg-config`.
+Building from source (needs the rdma-core dev headers + a compiler):
+
+```bash
+pip install "Cython>=3.0" "setuptools>=64" wheel
+pip install ./ibverbs       # or: pip install -e ./ibverbs
+```
 
 ## Quickstart
 
