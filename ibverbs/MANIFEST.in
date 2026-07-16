@@ -1,0 +1,3 @@
+include README.md CLAUDE.md LICENSE MANIFEST.in pyproject.toml setup.py
+include src/ibverbs/*.pyx src/ibverbs/*.pxd
+recursive-include tests *.py

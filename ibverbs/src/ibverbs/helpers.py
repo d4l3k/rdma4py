@@ -48,6 +48,34 @@ class QPInfo:
         return cls(qp_num=qp_num, psn=psn, lid=lid, gid=gid, port=port, mtu=mtu)
 
 
+def tensor_addr_len(tensor):
+    """Return ``(addr, nbytes)`` for a tensor-like object (torch or numpy).
+
+    Works with a torch tensor (``data_ptr()`` + ``numel()`` × ``element_size()``)
+    or a numpy array (``ctypes.data`` + ``nbytes``). No import of either library
+    is required — the object is duck-typed.
+    """
+    if hasattr(tensor, "data_ptr"):  # torch.Tensor
+        addr = int(tensor.data_ptr())
+        n = int(tensor.numel()) * int(tensor.element_size())
+    elif hasattr(tensor, "ctypes") and hasattr(tensor, "nbytes"):  # numpy.ndarray
+        addr = int(tensor.ctypes.data)
+        n = int(tensor.nbytes)
+    else:
+        raise TypeError("unsupported tensor type: %r" % type(tensor))
+    return addr, n
+
+
+def reg_tensor(pd, tensor, access):
+    """Register a host (CPU) tensor's memory as an MR via ``reg_mr``.
+
+    Convenience for a contiguous torch CPU tensor or numpy array. For CUDA
+    tensors use :func:`ibverbs.cuda.register_tensor` (dma-buf/GPUDirect) instead.
+    """
+    addr, n = tensor_addr_len(tensor)
+    return pd.reg_mr(addr, n, access)
+
+
 def local_qp_info(qp, port_attr, gid, *, port: int, psn: int = 0) -> QPInfo:
     """Build a :class:`QPInfo` describing ``qp`` for sending to a peer.
 

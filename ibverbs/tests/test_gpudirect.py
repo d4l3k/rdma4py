@@ -1,8 +1,8 @@
-"""GPUDirect RDMA against real H100s.
+"""GPUDirect RDMA against real GPUs, driven with torch tensors.
 
-Registers CUDA device memory with libibverbs and moves it over the NIC with
-zero host-memory staging. Uses the dma-buf path (``ibv_reg_dmabuf_mr``); if
-``nvidia_peermem`` is loaded the raw ``reg_mr`` path is also exercised.
+Allocation, fill, and verification all use torch; the only CUDA-specific step
+(exporting a dma-buf fd) is handled by ``ibverbs.cuda.register_tensor``. The
+library itself never imports torch.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 import ibverbs as ib
+import ibverbs.cuda as ibcuda
 from _rc import Endpoint, FULL_ACCESS
 
 pytestmark = [pytest.mark.integration, pytest.mark.gpu]
@@ -18,16 +19,6 @@ torch = pytest.importorskip("torch")
 
 if not torch.cuda.is_available():
     pytest.skip("no CUDA GPU available", allow_module_level=True)
-
-from _cuda import CudaUnavailable, CudaVMM  # noqa: E402
-
-
-@pytest.fixture(scope="module")
-def cuda():
-    try:
-        return CudaVMM(device=0)
-    except CudaUnavailable as exc:
-        pytest.skip(f"CUDA VMM unavailable: {exc}")
 
 
 @pytest.fixture()
@@ -50,68 +41,93 @@ def loopback(ctx, dev_name, first_active):
     pd.close()
 
 
-def test_reg_dmabuf_gpu_memory(cuda, ctx):
+def _register(pd, tensor):
+    try:
+        return ibcuda.register_tensor(pd, tensor, FULL_ACCESS)
+    except RuntimeError as exc:
+        pytest.skip(f"GPUDirect registration unavailable: {exc}")
+
+
+def test_register_torch_cuda_tensor(ctx):
     pd = ctx.alloc_pd()
-    ptr, size, fd = cuda.alloc(1 << 16)
-    mr = pd.reg_dmabuf_mr(0, size, ptr, fd, FULL_ACCESS)
-    assert mr.lkey != 0
-    assert mr.rkey != 0
-    mr.close()
+    t = torch.zeros(1 << 16, dtype=torch.uint8, device="cuda:0")
+    gmr = _register(pd, t)
+    assert gmr.lkey != 0
+    assert gmr.rkey != 0
+    assert gmr.addr == t.data_ptr()
+    gmr.close()
     pd.close()
 
 
-def test_gpudirect_rdma_write_dmabuf(cuda, loopback):
+def test_gpudirect_rdma_write(loopback):
     a, b, pd = loopback
-    n = 4096
-    sptr, ssz, sfd = cuda.alloc(n)
-    dptr, dsz, dfd = cuda.alloc(n)
-    smr = pd.reg_dmabuf_mr(0, ssz, sptr, sfd, FULL_ACCESS)
-    dmr = pd.reg_dmabuf_mr(0, dsz, dptr, dfd, FULL_ACCESS)
-
-    payload = bytes((i * 13) & 0xFF for i in range(n))
-    cuda.memset_host_to_device(sptr, payload)
-    cuda.memset_host_to_device(dptr, b"\x00" * n)
+    src = (torch.arange(4096, dtype=torch.float32, device="cuda:0") * 1.5)
+    dst = torch.zeros(4096, dtype=torch.float32, device="cuda:0")
+    src_mr = _register(pd, src)
+    dst_mr = _register(pd, dst)
 
     a.qp.post_send(ib.SendWR(
-        wr_id=1, sg_list=[ib.SGE(sptr, n, lkey=smr.lkey)],
-        opcode=ib.WROpcode.RDMA_WRITE, send_flags=ib.SendFlags.SIGNALED,
-        remote_addr=dptr, rkey=dmr.rkey))
+        wr_id=1, sg_list=[src_mr.sge()], opcode=ib.WROpcode.RDMA_WRITE,
+        send_flags=ib.SendFlags.SIGNALED, remote_addr=dst_mr.addr,
+        rkey=dst_mr.rkey))
     wc = a.poll_one()
     assert wc.status == ib.WCStatus.SUCCESS, wc
 
-    # The write landed in GPU memory with no host staging on the data path.
-    assert cuda.device_to_host(dptr, n) == payload
+    torch.cuda.synchronize()
+    assert torch.equal(src, dst)   # data moved GPU->GPU with no host staging
 
-    smr.close()
-    dmr.close()
+    src_mr.close()
+    dst_mr.close()
 
 
-def test_gpudirect_rdma_read_dmabuf(cuda, loopback):
+def test_gpudirect_rdma_read(loopback):
     a, b, pd = loopback
-    n = 2048
-    lptr, lsz, lfd = cuda.alloc(n)
-    rptr, rsz, rfd = cuda.alloc(n)
-    lmr = pd.reg_dmabuf_mr(0, lsz, lptr, lfd, FULL_ACCESS)
-    rmr = pd.reg_dmabuf_mr(0, rsz, rptr, rfd, FULL_ACCESS)
-
-    payload = bytes((i * 7 + 1) & 0xFF for i in range(n))
-    cuda.memset_host_to_device(rptr, payload)
-    cuda.memset_host_to_device(lptr, b"\x00" * n)
+    remote = torch.randint(0, 255, (2048,), dtype=torch.uint8, device="cuda:0")
+    local = torch.zeros(2048, dtype=torch.uint8, device="cuda:0")
+    local_mr = _register(pd, local)
+    remote_mr = _register(pd, remote)
 
     a.qp.post_send(ib.SendWR(
-        wr_id=2, sg_list=[ib.SGE(lptr, n, lkey=lmr.lkey)],
-        opcode=ib.WROpcode.RDMA_READ, send_flags=ib.SendFlags.SIGNALED,
-        remote_addr=rptr, rkey=rmr.rkey))
+        wr_id=2, sg_list=[local_mr.sge()], opcode=ib.WROpcode.RDMA_READ,
+        send_flags=ib.SendFlags.SIGNALED, remote_addr=remote_mr.addr,
+        rkey=remote_mr.rkey))
     wc = a.poll_one()
     assert wc.status == ib.WCStatus.SUCCESS, wc
-    assert cuda.device_to_host(lptr, n) == payload
 
-    lmr.close()
-    rmr.close()
+    torch.cuda.synchronize()
+    assert torch.equal(local, remote)
+
+    local_mr.close()
+    remote_mr.close()
 
 
-def test_reg_mr_peermem_if_available(cuda, ctx):
-    """If nvidia_peermem is loaded, a raw device pointer registers too."""
+def test_gpudirect_send_recv_between_gpus(loopback):
+    """SEND from a tensor on GPU 0 into a recv tensor on another GPU."""
+    a, b, pd = loopback
+    ndev = torch.cuda.device_count()
+    src = torch.arange(1024, dtype=torch.int32, device="cuda:0")
+    dst = torch.zeros(1024, dtype=torch.int32, device=f"cuda:{1 if ndev > 1 else 0}")
+    src_mr = _register(pd, src)
+    dst_mr = _register(pd, dst)
+
+    b.qp.post_recv(ib.RecvWR(wr_id=3, sg_list=[dst_mr.sge()]))
+    a.qp.post_send(ib.SendWR(wr_id=4, sg_list=[src_mr.sge()],
+                             opcode=ib.WROpcode.SEND,
+                             send_flags=ib.SendFlags.SIGNALED))
+    swc = a.poll_one()
+    rwc = b.poll_one()
+    assert swc.status == ib.WCStatus.SUCCESS, swc
+    assert rwc.status == ib.WCStatus.SUCCESS, rwc
+
+    torch.cuda.synchronize()
+    assert torch.equal(src.cpu(), dst.cpu())
+
+    src_mr.close()
+    dst_mr.close()
+
+
+def test_reg_mr_peermem_if_available(ctx):
+    """If nvidia_peermem is loaded, the raw reg_mr device-pointer path works too."""
     import os
 
     if not os.path.exists("/sys/module/nvidia_peermem"):

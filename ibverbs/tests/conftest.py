@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import os
 
+# torch's CUDA memory must be VMM-backed to be dma-buf exportable for
+# GPUDirect. Set this before torch is ever imported (conftest loads first).
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import pytest
 
 import ibverbs as ib

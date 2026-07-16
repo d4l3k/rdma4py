@@ -58,7 +58,13 @@ from .enums import (
     WCStatus,
     WROpcode,
 )
-from .helpers import QPInfo, connect_rc, local_qp_info
+from .helpers import (
+    QPInfo,
+    connect_rc,
+    local_qp_info,
+    reg_tensor,
+    tensor_addr_len,
+)
 
 __all__ = [
     "__version__",
@@ -70,5 +76,9 @@ __all__ = [
     "AccessFlags", "MTU", "NodeType", "PortState", "QPAttrMask", "QPState",
     "QPType", "SendFlags", "WCFlags", "WCOpcode", "WCStatus", "WROpcode",
     # helpers
-    "QPInfo", "connect_rc", "local_qp_info",
+    "QPInfo", "connect_rc", "local_qp_info", "reg_tensor", "tensor_addr_len",
 ]
+
+# `ibverbs.cuda` (optional GPUDirect helpers) is intentionally NOT imported
+# here so that plain `import ibverbs` never dlopens libcuda; import it
+# explicitly with `import ibverbs.cuda` when you need it.
