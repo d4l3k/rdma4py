@@ -1,0 +1,9 @@
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.so
+# Cython-generated C sources
+src/ibverbs/_ibverbs.c
+__pycache__/
+.pytest_cache/

@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=64", "Cython>=3.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ibverbs"
+version = "0.1.0"
+description = "Low-level Pythonic bindings for libibverbs (RDMA), with GPUDirect support"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "Tristan Rice" }]
+keywords = ["rdma", "ibverbs", "infiniband", "roce", "gpudirect", "networking"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Cython",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Networking",
+]
+# No runtime dependencies: the library only needs libibverbs at load time.
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7", "numpy"]
+gpu = ["torch"]
+
+[project.urls]
+Homepage = "https://github.com/tristanr/rdma4py"
+Repository = "https://github.com/tristanr/rdma4py"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: exercises real RDMA hardware (loopback / two-NIC)",
+    "gpu: requires a CUDA GPU and torch (GPUDirect)",
+]
+testpaths = ["tests"]
