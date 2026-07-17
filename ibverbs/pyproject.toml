@@ -50,7 +50,9 @@ testpaths = ["tests"]
 # build image only needs the -devel headers; the wheel has no external NEEDED
 # library and is trivially manylinux-compliant.
 [tool.cibuildwheel]
-build = "cp39-abi3"
+# cibuildwheel selects a CPython build environment; setup.py retags the
+# resulting extension as cp39-abi3 via Py_LIMITED_API.
+build = "cp39-*"
 build-frontend = "build"
 skip = ["*-musllinux*"]
 test-requires = ["pytest", "numpy"]

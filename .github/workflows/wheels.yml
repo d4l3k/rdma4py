@@ -19,35 +19,35 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up QEMU (for aarch64)
         if: matrix.arch == 'aarch64'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.21
+        uses: pypa/cibuildwheel@v4.1.0
         with:
-          package-dir: ibverbs
-          output-dir: wheelhouse
+          package-dir: ${{ github.workspace }}/ibverbs
+          output-dir: ${{ github.workspace }}/wheelhouse
         env:
           CIBW_ARCHS_LINUX: ${{ matrix.arch }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.arch }}
-          path: ibverbs/wheelhouse/*.whl
+          path: wheelhouse/*.whl
 
   build_sdist:
     name: sdist
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install rdma-core headers
         run: sudo apt-get update && sudo apt-get install -y libibverbs-dev
       - name: Build sdist
         run: pipx run build --sdist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdist
           path: ibverbs/dist/*.tar.gz
@@ -61,7 +61,7 @@ jobs:
     permissions:
       id-token: write  # PyPI trusted publishing (no token needed)
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
