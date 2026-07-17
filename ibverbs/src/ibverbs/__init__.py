@@ -30,6 +30,7 @@ from ._ibverbs import (
     AHAttr,
     AsyncEvent,
     CompChannel,
+    CompletionError,
     Context,
     Device,
     DeviceAttr,
@@ -71,7 +72,8 @@ __all__ = [
     # handles / core
     "AH", "CQ", "MR", "PD", "QP", "SRQ", "AHAttr", "AsyncEvent", "CompChannel",
     "Context", "Device", "DeviceAttr", "Gid", "PortAttr", "QPCap", "QPInitAttr",
-    "RecvWR", "SendWR", "SGE", "VerbsError", "WC", "get_device_list",
+    "RecvWR", "SendWR", "SGE", "VerbsError", "CompletionError", "WC",
+    "get_device_list",
     # enums
     "AccessFlags", "MTU", "NodeType", "PortState", "QPAttrMask", "QPState",
     "QPType", "SendFlags", "WCFlags", "WCOpcode", "WCStatus", "WROpcode",

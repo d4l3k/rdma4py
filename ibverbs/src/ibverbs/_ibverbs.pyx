@@ -9,7 +9,7 @@ garbage collector cannot free a parent before its children. Hot paths
 
 import os
 
-from libc.errno cimport errno
+from libc.errno cimport EBADF, EBUSY, EIO, errno
 from libc.stddef cimport size_t
 from libc.stdint cimport uint8_t, uint16_t, uint32_t, uint64_t, uintptr_t
 from libc.stdlib cimport calloc, free
@@ -187,14 +187,29 @@ class VerbsError(OSError):
     ``.operation`` names the verb that failed.
     """
 
-    def __init__(self, str operation, int err):
+    def __init__(self, str operation, int err, detail=None):
         self.operation = operation
-        msg = "%s failed: %s" % (operation, os.strerror(err))
+        msg = ("%s failed: %s" % (operation, os.strerror(err))
+               if detail is None else str(detail))
         super().__init__(err, msg)
 
 
+cdef int _error_from_rc(int rc):
+    if rc > 0:
+        return rc
+    if errno != 0:
+        return errno
+    if rc < -1:
+        return -rc
+    return EIO
+
+
 cdef int _fail(str op) except -1:
-    raise VerbsError(op, errno)
+    raise VerbsError(op, errno if errno != 0 else EIO)
+
+
+cdef int _fail_rc(str op, int rc) except -1:
+    raise VerbsError(op, _error_from_rc(rc))
 
 
 # --------------------------------------------------------------------------- #
@@ -321,14 +336,29 @@ cdef class WC:
         return _v_wc_status_str(self.status).decode()
 
     def raise_for_status(self):
-        """Raise :class:`VerbsError` if this completion did not succeed."""
+        """Raise :class:`CompletionError` if this completion did not succeed."""
         if self.status != 0:
-            raise VerbsError("work completion (%s)" % self.status_str, 0)
+            raise CompletionError(self)
 
     def __repr__(self):
         return ("WC(wr_id=%d, status=%d (%s), opcode=%d, byte_len=%d, "
                 "qp_num=%d)") % (self.wr_id, self.status, self.status_str,
                                  self.opcode, self.byte_len, self.qp_num)
+
+
+class CompletionError(VerbsError):
+    """Raised by :meth:`WC.raise_for_status` for a failed completion."""
+
+    def __init__(self, WC wc):
+        self.wc = wc
+        self.status = wc.status
+        self.vendor_err = wc.vendor_err
+        super().__init__(
+            "work completion",
+            EIO,
+            "work completion failed: %s (status=%d, vendor_err=0x%x)" % (
+                wc.status_str, wc.status, wc.vendor_err),
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -344,17 +374,44 @@ cdef class SGE:
     cdef readonly uint64_t addr
     cdef readonly uint32_t length
     cdef readonly uint32_t lkey
+    cdef readonly object owner
 
     def __init__(self, target, length, lkey=0, offset=0):
         cdef MR mr
+        cdef object py_length = int(length)
+        cdef object py_offset = int(offset)
+        cdef object py_lkey = int(lkey)
+        cdef object py_addr
+        if py_length < 0 or py_length > 0xFFFFFFFF:
+            raise ValueError("SGE length must be between 0 and 2**32 - 1")
+        if py_offset < 0:
+            raise ValueError("SGE offset must be non-negative")
+        if py_lkey < 0 or py_lkey > 0xFFFFFFFF:
+            raise ValueError("SGE lkey must be between 0 and 2**32 - 1")
         if isinstance(target, MR):
             mr = <MR>target
-            self.addr = (<uint64_t><uintptr_t>mr._mr.addr) + <uint64_t>offset
-            self.lkey = mr._mr.lkey if lkey == 0 else <uint32_t>lkey
+            mr._ensure()
+            if py_offset > mr._mr.length or py_length > mr._mr.length - py_offset:
+                raise ValueError("SGE range exceeds the memory region")
+            self.addr = ((<uint64_t><uintptr_t>mr._mr.addr)
+                         + <uint64_t>py_offset)
+            self.lkey = mr._mr.lkey if py_lkey == 0 else <uint32_t>py_lkey
+            self.owner = mr
         else:
-            self.addr = (<uint64_t>int(target)) + <uint64_t>offset
-            self.lkey = <uint32_t>lkey
-        self.length = <uint32_t>length
+            py_addr = int(target)
+            if py_addr < 0 or py_addr > 0xFFFFFFFFFFFFFFFF:
+                raise ValueError("SGE address must be between 0 and 2**64 - 1")
+            if py_addr + py_offset > 0xFFFFFFFFFFFFFFFF:
+                raise ValueError("SGE address plus offset exceeds 2**64 - 1")
+            self.addr = <uint64_t>(py_addr + py_offset)
+            self.lkey = <uint32_t>py_lkey
+            self.owner = None
+        self.length = <uint32_t>py_length
+
+    def _keepalive(self, owner):
+        """Retain ``owner`` for as long as this SGE is retained."""
+        self.owner = owner
+        return self
 
     def __repr__(self):
         return "SGE(addr=0x%x, length=%d, lkey=0x%x)" % (
@@ -548,9 +605,11 @@ cdef class Context:
 
     cdef c.ibv_context *_ctx
     cdef readonly str name
+    cdef unsigned int _children
 
     def __cinit__(self):
         self._ctx = NULL
+        self._children = 0
 
     @staticmethod
     cdef Context _wrap(c.ibv_context *ctx, str name):
@@ -561,8 +620,15 @@ cdef class Context:
 
     cdef int _ensure(self) except -1:
         if self._ctx is NULL:
-            raise VerbsError("context is closed", 0)
+            raise VerbsError("context is closed", EBADF)
         return 0
+
+    cdef void _add_child(self):
+        self._children += 1
+
+    cdef void _release_child(self):
+        if self._children > 0:
+            self._children -= 1
 
     @property
     def num_comp_vectors(self) -> int:
@@ -577,8 +643,9 @@ cdef class Context:
     def query_device(self) -> DeviceAttr:
         self._ensure()
         cdef c.ibv_device_attr a
-        if _v_query_device(self._ctx, &a) != 0:
-            _fail("ibv_query_device")
+        cdef int rc = _v_query_device(self._ctx, &a)
+        if rc != 0:
+            _fail_rc("ibv_query_device", rc)
         cdef DeviceAttr r = DeviceAttr.__new__(DeviceAttr)
         r.fw_ver = a.fw_ver.decode() if a.fw_ver[0] != 0 else ""
         r.node_guid = a.node_guid
@@ -607,8 +674,9 @@ cdef class Context:
         self._ensure()
         cdef c.ibv_port_attr a
         memset(&a, 0, sizeof(a))
-        if _v_query_port(self._ctx, <uint8_t>port_num, &a) != 0:
-            _fail("ibv_query_port")
+        cdef int rc = _v_query_port(self._ctx, <uint8_t>port_num, &a)
+        if rc != 0:
+            _fail_rc("ibv_query_port", rc)
         cdef PortAttr r = PortAttr.__new__(PortAttr)
         r.state = a.state
         r.max_mtu = a.max_mtu
@@ -648,10 +716,17 @@ cdef class Context:
 
     def create_cq(self, int cqe, channel=None, int comp_vector=0) -> "CQ":
         self._ensure()
+        if cqe <= 0:
+            raise ValueError("cqe must be positive")
+        if comp_vector < 0 or comp_vector >= self._ctx.num_comp_vectors:
+            raise ValueError("comp_vector is outside the context's range")
         cdef c.ibv_comp_channel *chp = NULL
         cdef CompChannel ch = None
         if channel is not None:
             ch = <CompChannel>channel
+            ch._ensure()
+            if ch.context is not self:
+                raise ValueError("completion channel must belong to this context")
             chp = ch._chan
         cdef CQ cq = CQ.__new__(CQ)
         cq.context = self
@@ -659,6 +734,7 @@ cdef class Context:
         cq._cq = _v_create_cq(self._ctx, cqe, <void*>cq, chp, comp_vector)
         if cq._cq is NULL:
             _fail("ibv_create_cq")
+        self._add_child()
         return cq
 
     def get_async_event(self) -> "AsyncEvent":
@@ -680,11 +756,18 @@ cdef class Context:
 
     def close(self):
         if self._ctx is not NULL:
-            _v_close_device(self._ctx)
+            if self._children != 0:
+                raise VerbsError(
+                    "ibv_close_device", EBUSY,
+                    "cannot close context with %d open child resource(s)"
+                    % self._children,
+                )
+            if _v_close_device(self._ctx) != 0:
+                _fail("ibv_close_device")
             self._ctx = NULL
 
     def __dealloc__(self):
-        if self._ctx is not NULL:
+        if self._ctx is not NULL and self._children == 0:
             _v_close_device(self._ctx)
             self._ctx = NULL
 
@@ -728,11 +811,12 @@ cdef class PD:
         cdef PD self = PD.__new__(PD)
         self._pd = pd
         self.context = ctx
+        ctx._add_child()
         return self
 
     cdef int _ensure(self) except -1:
         if self._pd is NULL:
-            raise VerbsError("pd is closed", 0)
+            raise VerbsError("pd is closed", EBADF)
         return 0
 
     def reg_mr(self, addr, length, int access) -> "MR":
@@ -742,8 +826,16 @@ cdef class PD:
         CUDA device pointer (GPUDirect via nvidia_peermem).
         """
         self._ensure()
-        cdef uint64_t a = <uint64_t>int(addr)
-        cdef size_t ln = <size_t>length
+        cdef object py_addr = int(addr)
+        cdef object py_length = int(length)
+        if py_addr < 0 or py_addr > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("addr must be between 0 and 2**64 - 1")
+        if py_length <= 0 or py_length > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("length must be between 1 and 2**64 - 1")
+        if py_addr + py_length > 0x10000000000000000:
+            raise ValueError("memory region address range exceeds 2**64")
+        cdef uint64_t a = <uint64_t>py_addr
+        cdef size_t ln = <size_t>py_length
         cdef unsigned int acc = <unsigned int>access
         cdef c.ibv_mr *mr
         with nogil:
@@ -759,10 +851,19 @@ cdef class PD:
             raise RuntimeError(
                 "ibv_reg_dmabuf_mr is unavailable: this libibverbs predates "
                 "rdma-core 34. Use reg_mr with nvidia_peermem instead.")
+        cdef object py_offset = int(offset)
+        cdef object py_length = int(length)
+        cdef object py_iova = int(iova)
+        if py_offset < 0 or py_offset > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("offset must be between 0 and 2**64 - 1")
+        if py_length <= 0 or py_length > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("length must be between 1 and 2**64 - 1")
+        if py_iova < 0 or py_iova > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("iova must be between 0 and 2**64 - 1")
         cdef c.ibv_mr *mr
-        cdef uint64_t off = <uint64_t>int(offset)
-        cdef size_t ln = <size_t>length
-        cdef uint64_t iv = <uint64_t>int(iova)
+        cdef uint64_t off = <uint64_t>py_offset
+        cdef size_t ln = <size_t>py_length
+        cdef uint64_t iv = <uint64_t>py_iova
         with nogil:
             mr = _v_reg_dmabuf_mr(self._pd, off, ln, iv, fd, access)
         if mr is NULL:
@@ -776,10 +877,17 @@ cdef class PD:
         cdef CQ scq = <CQ>init_attr.send_cq
         cdef CQ rcq = <CQ>init_attr.recv_cq
         cdef SRQ srq = None
+        scq._ensure()
+        rcq._ensure()
+        if scq.context is not self.context or rcq.context is not self.context:
+            raise ValueError("queue-pair CQs must belong to the PD's context")
         a.send_cq = scq._cq
         a.recv_cq = rcq._cq
         if init_attr.srq is not None:
             srq = <SRQ>init_attr.srq
+            srq._ensure()
+            if srq.pd is not self:
+                raise ValueError("queue-pair SRQ must belong to this PD")
             a.srq = srq._srq
         a.qp_type = init_attr.qp_type
         a.sq_sig_all = 1 if init_attr.sq_sig_all else 0
@@ -815,13 +923,18 @@ cdef class PD:
         return SRQ._wrap(srq, self)
 
     def close(self):
+        cdef int rc
         if self._pd is not NULL:
-            _v_dealloc_pd(self._pd)
+            rc = _v_dealloc_pd(self._pd)
+            if rc != 0:
+                _fail_rc("ibv_dealloc_pd", rc)
             self._pd = NULL
+            self.context._release_child()
 
     def __dealloc__(self):
         if self._pd is not NULL:
-            _v_dealloc_pd(self._pd)
+            if _v_dealloc_pd(self._pd) == 0:
+                self.context._release_child()
             self._pd = NULL
 
     def __enter__(self):
@@ -837,38 +950,73 @@ cdef class MR:
 
     cdef c.ibv_mr *_mr
     cdef readonly PD pd
+    cdef readonly object owner
 
     @staticmethod
     cdef MR _wrap(c.ibv_mr *mr, PD pd):
         cdef MR self = MR.__new__(MR)
         self._mr = mr
         self.pd = pd
+        self.owner = None
         return self
+
+    cdef int _ensure(self) except -1:
+        if self._mr is NULL:
+            raise VerbsError("memory region is closed", EBADF)
+        return 0
+
+    @property
+    def closed(self) -> bool:
+        return self._mr is NULL
 
     @property
     def addr(self) -> int:
+        self._ensure()
         return <uint64_t><uintptr_t>self._mr.addr
 
     @property
     def length(self) -> int:
+        self._ensure()
         return self._mr.length
 
     @property
     def lkey(self) -> int:
+        self._ensure()
         return self._mr.lkey
 
     @property
     def rkey(self) -> int:
+        self._ensure()
         return self._mr.rkey
 
     @property
     def handle(self) -> int:
+        self._ensure()
         return self._mr.handle
 
+    def sge(self, length=None, offset=0):
+        """Return an :class:`SGE` for a bounded range of this MR."""
+        self._ensure()
+        cdef object py_offset = int(offset)
+        if py_offset < 0 or py_offset > self._mr.length:
+            raise ValueError("SGE offset is outside the memory region")
+        if length is None:
+            length = self._mr.length - py_offset
+        return SGE(self, length, offset=py_offset)
+
+    def _keepalive(self, owner):
+        """Retain the object that owns this MR's backing allocation."""
+        self.owner = owner
+        return self
+
     def close(self):
+        cdef int rc
         if self._mr is not NULL:
-            _v_dereg_mr(self._mr)
+            rc = _v_dereg_mr(self._mr)
+            if rc != 0:
+                _fail_rc("ibv_dereg_mr", rc)
             self._mr = NULL
+            self.owner = None
 
     def __dealloc__(self):
         if self._mr is not NULL:
@@ -883,6 +1031,8 @@ cdef class MR:
         return False
 
     def __repr__(self):
+        if self._mr is NULL:
+            return "MR(closed=True)"
         return "MR(addr=0x%x, length=%d, lkey=0x%x, rkey=0x%x)" % (
             self.addr, self.length, self.lkey, self.rkey)
 
@@ -901,17 +1051,25 @@ cdef class CompChannel:
         cdef CompChannel self = CompChannel.__new__(CompChannel)
         self._chan = chan
         self.context = ctx
+        ctx._add_child()
         return self
 
     @property
     def fd(self) -> int:
+        self._ensure()
         return self._chan.fd
+
+    cdef int _ensure(self) except -1:
+        if self._chan is NULL:
+            raise VerbsError("completion channel is closed", EBADF)
+        return 0
 
     def get_cq_event(self) -> "CQ":
         """Block until a CQ event arrives; return the associated :class:`CQ`.
 
         The event must later be acknowledged with :meth:`CQ.ack_events`.
         """
+        self._ensure()
         cdef c.ibv_cq *cq = NULL
         cdef void *ctx = NULL
         cdef int rc
@@ -924,13 +1082,18 @@ cdef class CompChannel:
         return obj
 
     def close(self):
+        cdef int rc
         if self._chan is not NULL:
-            _v_destroy_comp_channel(self._chan)
+            rc = _v_destroy_comp_channel(self._chan)
+            if rc != 0:
+                _fail_rc("ibv_destroy_comp_channel", rc)
             self._chan = NULL
+            self.context._release_child()
 
     def __dealloc__(self):
         if self._chan is not NULL:
-            _v_destroy_comp_channel(self._chan)
+            if _v_destroy_comp_channel(self._chan) == 0:
+                self.context._release_child()
             self._chan = NULL
 
     def __enter__(self):
@@ -949,12 +1112,19 @@ cdef class CQ:
     cdef readonly CompChannel channel
     cdef int _unacked
 
+    cdef int _ensure(self) except -1:
+        if self._cq is NULL:
+            raise VerbsError("completion queue is closed", EBADF)
+        return 0
+
     @property
     def cqe(self) -> int:
+        self._ensure()
         return self._cq.cqe
 
     def poll(self, int num_entries) -> list:
         """Poll up to ``num_entries`` completions; return a list of :class:`WC`."""
+        self._ensure()
         if num_entries <= 0:
             raise ValueError("num_entries must be positive")
         cdef c.ibv_wc *wcs = <c.ibv_wc*>calloc(num_entries, sizeof(c.ibv_wc))
@@ -966,7 +1136,8 @@ cdef class CQ:
             with nogil:
                 n = c.ibv_poll_cq(self._cq, num_entries, wcs)
             if n < 0:
-                raise VerbsError("ibv_poll_cq", errno)
+                raise VerbsError("ibv_poll_cq", -n if n < -1 else (
+                    errno if errno != 0 else EIO))
             out = []
             for i in range(n):
                 out.append(_wc_from_c(&wcs[i]))
@@ -976,30 +1147,40 @@ cdef class CQ:
 
     def req_notify(self, bint solicited_only=False):
         """Request a completion notification on the CQ's channel."""
-        if c.ibv_req_notify_cq(self._cq, 1 if solicited_only else 0) != 0:
-            _fail("ibv_req_notify_cq")
+        self._ensure()
+        cdef int rc = c.ibv_req_notify_cq(
+            self._cq, 1 if solicited_only else 0)
+        if rc != 0:
+            _fail_rc("ibv_req_notify_cq", rc)
 
     def ack_events(self, unsigned int nevents=1):
         """Acknowledge ``nevents`` events delivered via the channel."""
+        self._ensure()
+        if nevents == 0:
+            raise ValueError("nevents must be positive")
+        if <int>nevents > self._unacked:
+            raise ValueError("cannot acknowledge more CQ events than were received")
         _v_ack_cq_events(self._cq, nevents)
-        if <int>nevents <= self._unacked:
-            self._unacked -= <int>nevents
-        else:
-            self._unacked = 0
+        self._unacked -= <int>nevents
 
     def close(self):
+        cdef int rc
         if self._cq is not NULL:
             if self._unacked > 0:
                 _v_ack_cq_events(self._cq, <unsigned int>self._unacked)
                 self._unacked = 0
-            _v_destroy_cq(self._cq)
+            rc = _v_destroy_cq(self._cq)
+            if rc != 0:
+                _fail_rc("ibv_destroy_cq", rc)
             self._cq = NULL
+            self.context._release_child()
 
     def __dealloc__(self):
         if self._cq is not NULL:
             if self._unacked > 0:
                 _v_ack_cq_events(self._cq, <unsigned int>self._unacked)
-            _v_destroy_cq(self._cq)
+            if _v_destroy_cq(self._cq) == 0:
+                self.context._release_child()
             self._cq = NULL
 
     def __enter__(self):
@@ -1077,6 +1258,11 @@ cdef class QP:
     cdef readonly object srq
     cdef int _port
 
+    cdef int _ensure(self) except -1:
+        if self._qp is NULL:
+            raise VerbsError("queue pair is closed", EBADF)
+        return 0
+
     @staticmethod
     cdef QP _wrap(c.ibv_qp *qp, PD pd, CQ scq, CQ rcq, SRQ srq):
         cdef QP self = QP.__new__(QP)
@@ -1090,30 +1276,36 @@ cdef class QP:
 
     @property
     def qp_num(self) -> int:
+        self._ensure()
         return self._qp.qp_num
 
     @property
     def qp_type(self) -> int:
+        self._ensure()
         return self._qp.qp_type
 
     @property
     def state(self) -> int:
         """The queue pair's current state (authoritative, via query)."""
+        self._ensure()
         cdef c.ibv_qp_attr a
         cdef c.ibv_qp_init_attr ia
         memset(&a, 0, sizeof(a))
-        if _v_query_qp(self._qp, &a, _QP_STATE, &ia) != 0:
-            _fail("ibv_query_qp")
+        cdef int rc = _v_query_qp(self._qp, &a, _QP_STATE, &ia)
+        if rc != 0:
+            _fail_rc("ibv_query_qp", rc)
         return a.qp_state
 
     def query(self):
         """Return ``(attrs, cap)`` for the queue pair as plain dict + QPCap."""
+        self._ensure()
         cdef c.ibv_qp_attr a
         cdef c.ibv_qp_init_attr ia
         memset(&a, 0, sizeof(a))
         memset(&ia, 0, sizeof(ia))
-        if _v_query_qp(self._qp, &a, 0x1FFFFFF, &ia) != 0:
-            _fail("ibv_query_qp")
+        cdef int rc = _v_query_qp(self._qp, &a, 0x1FFFFFF, &ia)
+        if rc != 0:
+            _fail_rc("ibv_query_qp", rc)
         cdef QPCap cap = QPCap.__new__(QPCap)
         cap.max_send_wr = ia.cap.max_send_wr
         cap.max_recv_wr = ia.cap.max_recv_wr
@@ -1145,6 +1337,16 @@ cdef class QP:
         attributes are passed as keywords (e.g. ``qp_state=``, ``port_num=``);
         the address vector is passed as an :class:`AHAttr` via ``ah_attr=``.
         """
+        self._ensure()
+        unknown = set(fields) - {
+            "qp_state", "cur_qp_state", "path_mtu", "qkey", "rq_psn",
+            "sq_psn", "dest_qp_num", "qp_access_flags", "pkey_index",
+            "port_num", "timeout", "retry_cnt", "rnr_retry",
+            "min_rnr_timer", "max_rd_atomic", "max_dest_rd_atomic",
+        }
+        if unknown:
+            raise TypeError("unknown QP attribute(s): %s" %
+                            ", ".join(sorted(unknown)))
         cdef c.ibv_qp_attr a
         memset(&a, 0, sizeof(a))
         if "qp_state" in fields: a.qp_state = fields["qp_state"]
@@ -1165,12 +1367,14 @@ cdef class QP:
         if "max_dest_rd_atomic" in fields: a.max_dest_rd_atomic = fields["max_dest_rd_atomic"]
         if ah_attr is not None:
             _fill_ah_attr(&a.ah_attr, <AHAttr>ah_attr)
-        if _v_modify_qp(self._qp, &a, attr_mask) != 0:
-            _fail("ibv_modify_qp")
+        cdef int rc = _v_modify_qp(self._qp, &a, attr_mask)
+        if rc != 0:
+            _fail_rc("ibv_modify_qp", rc)
 
     # -- RC/UD state-machine helpers -----------------------------------------
     def to_init(self, int port, int access=0, int pkey_index=0, int qkey=0):
         """Transition RESET -> INIT."""
+        self._ensure()
         cdef c.ibv_qp_attr a
         cdef int mask
         memset(&a, 0, sizeof(a))
@@ -1184,21 +1388,25 @@ cdef class QP:
         else:
             a.qp_access_flags = access
             mask = _QP_STATE | _QP_PKEY_INDEX | _QP_PORT | _QP_ACCESS_FLAGS
-        if _v_modify_qp(self._qp, &a, mask) != 0:
-            _fail("ibv_modify_qp(->INIT)")
+        cdef int rc = _v_modify_qp(self._qp, &a, mask)
+        if rc != 0:
+            _fail_rc("ibv_modify_qp(->INIT)", rc)
 
     def to_rtr(self, remote, int sgid_index, mtu=None, int hop_limit=1,
                int min_rnr_timer=12, int max_dest_rd_atomic=1, int sl=0,
                int traffic_class=0):
         """Transition INIT -> RTR using a remote :class:`~ibverbs.helpers.QPInfo`."""
+        self._ensure()
         cdef c.ibv_qp_attr a
         cdef int mask
+        cdef int rc
         cdef bytes dgid
         memset(&a, 0, sizeof(a))
         a.qp_state = _QPS_RTR
         if self._qp.qp_type == _QPT_UD:
-            if _v_modify_qp(self._qp, &a, _QP_STATE) != 0:
-                _fail("ibv_modify_qp(->RTR)")
+            rc = _v_modify_qp(self._qp, &a, _QP_STATE)
+            if rc != 0:
+                _fail_rc("ibv_modify_qp(->RTR)", rc)
             return
         a.path_mtu = int(mtu) if mtu is not None else int(remote.mtu)
         a.dest_qp_num = remote.qp_num
@@ -1206,6 +1414,8 @@ cdef class QP:
         a.max_dest_rd_atomic = max_dest_rd_atomic
         a.min_rnr_timer = min_rnr_timer
         dgid = bytes(remote.gid)
+        if len(dgid) != 16:
+            raise ValueError("remote gid must be exactly 16 bytes")
         a.ah_attr.is_global = 1
         memcpy(&a.ah_attr.grh.dgid.raw[0], <char*>dgid, 16)
         a.ah_attr.grh.sgid_index = <uint8_t>sgid_index
@@ -1217,12 +1427,14 @@ cdef class QP:
         a.ah_attr.port_num = <uint8_t>self._port
         mask = (_QP_STATE | _QP_AV | _QP_PATH_MTU | _QP_DEST_QPN | _QP_RQ_PSN
                 | _QP_MAX_DEST_RD_ATOMIC | _QP_MIN_RNR_TIMER)
-        if _v_modify_qp(self._qp, &a, mask) != 0:
-            _fail("ibv_modify_qp(->RTR)")
+        rc = _v_modify_qp(self._qp, &a, mask)
+        if rc != 0:
+            _fail_rc("ibv_modify_qp(->RTR)", rc)
 
     def to_rts(self, int psn, int timeout=14, int retry_cnt=7, int rnr_retry=7,
                int max_rd_atomic=1):
         """Transition RTR -> RTS."""
+        self._ensure()
         cdef c.ibv_qp_attr a
         cdef int mask
         memset(&a, 0, sizeof(a))
@@ -1237,24 +1449,34 @@ cdef class QP:
             a.max_rd_atomic = <uint8_t>max_rd_atomic
             mask = (_QP_STATE | _QP_TIMEOUT | _QP_RETRY_CNT | _QP_RNR_RETRY
                     | _QP_SQ_PSN | _QP_MAX_QP_RD_ATOMIC)
-        if _v_modify_qp(self._qp, &a, mask) != 0:
-            _fail("ibv_modify_qp(->RTS)")
+        cdef int rc = _v_modify_qp(self._qp, &a, mask)
+        if rc != 0:
+            _fail_rc("ibv_modify_qp(->RTS)", rc)
 
     def post_send(self, wrs):
         """Post one or more :class:`SendWR` to the send queue."""
+        self._ensure()
         if isinstance(wrs, SendWR):
             wrs = [wrs]
+        elif not isinstance(wrs, list):
+            wrs = list(wrs)
         _post_send(self._qp, wrs)
 
     def post_recv(self, wrs):
         """Post one or more :class:`RecvWR` to the receive queue."""
+        self._ensure()
         if isinstance(wrs, RecvWR):
             wrs = [wrs]
+        elif not isinstance(wrs, list):
+            wrs = list(wrs)
         _post_recv_qp(self._qp, wrs)
 
     def close(self):
+        cdef int rc
         if self._qp is not NULL:
-            _v_destroy_qp(self._qp)
+            rc = _v_destroy_qp(self._qp)
+            if rc != 0:
+                _fail_rc("ibv_destroy_qp", rc)
             self._qp = NULL
 
     def __dealloc__(self):
@@ -1270,6 +1492,8 @@ cdef class QP:
         return False
 
     def __repr__(self):
+        if self._qp is NULL:
+            return "QP(closed=True)"
         return "QP(qp_num=%d, qp_type=%d)" % (self._qp.qp_num, self._qp.qp_type)
 
 
@@ -1412,8 +1636,11 @@ cdef class AH:
         return self
 
     def close(self):
+        cdef int rc
         if self._ah is not NULL:
-            _v_destroy_ah(self._ah)
+            rc = _v_destroy_ah(self._ah)
+            if rc != 0:
+                _fail_rc("ibv_destroy_ah", rc)
             self._ah = NULL
 
     def __dealloc__(self):
@@ -1421,12 +1648,24 @@ cdef class AH:
             _v_destroy_ah(self._ah)
             self._ah = NULL
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
 
 cdef class SRQ:
     """A shared receive queue (``ibv_srq``)."""
 
     cdef c.ibv_srq *_srq
     cdef readonly PD pd
+
+    cdef int _ensure(self) except -1:
+        if self._srq is NULL:
+            raise VerbsError("shared receive queue is closed", EBADF)
+        return 0
 
     @staticmethod
     cdef SRQ _wrap(c.ibv_srq *srq, PD pd):
@@ -1436,18 +1675,24 @@ cdef class SRQ:
         return self
 
     def post_recv(self, wrs):
+        self._ensure()
         if isinstance(wrs, RecvWR):
             wrs = [wrs]
+        elif not isinstance(wrs, list):
+            wrs = list(wrs)
         _post_recv_chain(NULL, self._srq, wrs)
 
     def query(self):
+        self._ensure()
         cdef c.ibv_srq_attr a
         memset(&a, 0, sizeof(a))
-        if _v_query_srq(self._srq, &a) != 0:
-            _fail("ibv_query_srq")
+        cdef int rc = _v_query_srq(self._srq, &a)
+        if rc != 0:
+            _fail_rc("ibv_query_srq", rc)
         return {"max_wr": a.max_wr, "max_sge": a.max_sge, "srq_limit": a.srq_limit}
 
     def modify(self, max_wr=None, srq_limit=None):
+        self._ensure()
         cdef c.ibv_srq_attr a
         cdef int mask = 0
         memset(&a, 0, sizeof(a))
@@ -1457,12 +1702,16 @@ cdef class SRQ:
         if srq_limit is not None:
             a.srq_limit = srq_limit
             mask |= 2  # IBV_SRQ_LIMIT
-        if _v_modify_srq(self._srq, &a, mask) != 0:
-            _fail("ibv_modify_srq")
+        cdef int rc = _v_modify_srq(self._srq, &a, mask)
+        if rc != 0:
+            _fail_rc("ibv_modify_srq", rc)
 
     def close(self):
+        cdef int rc
         if self._srq is not NULL:
-            _v_destroy_srq(self._srq)
+            rc = _v_destroy_srq(self._srq)
+            if rc != 0:
+                _fail_rc("ibv_destroy_srq", rc)
             self._srq = NULL
 
     def __dealloc__(self):
@@ -1470,9 +1719,17 @@ cdef class SRQ:
             _v_destroy_srq(self._srq)
             self._srq = NULL
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
 
 __all__ = [
-    "VerbsError", "Gid", "DeviceAttr", "PortAttr", "WC", "SGE", "SendWR",
+    "VerbsError", "CompletionError", "Gid", "DeviceAttr", "PortAttr", "WC",
+    "SGE", "SendWR",
     "RecvWR", "QPCap", "QPInitAttr", "AHAttr", "Device", "get_device_list",
     "Context", "AsyncEvent", "PD", "MR", "CompChannel", "CQ", "QP", "AH", "SRQ",
 ]

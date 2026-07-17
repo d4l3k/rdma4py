@@ -68,6 +68,15 @@ def test_context_is_context_manager(all_devices):
         assert c.query_device().max_qp > 0
 
 
+def test_context_rejects_close_with_open_child(ctx):
+    pd = ctx.alloc_pd()
+    with pytest.raises(ib.VerbsError) as exc_info:
+        ctx.close()
+    assert exc_info.value.errno != 0
+    assert ctx.query_device().phys_port_cnt > 0
+    pd.close()
+
+
 def test_query_port_bad_port_raises(ctx):
     with pytest.raises(ib.VerbsError):
         ctx.query_port(99)

@@ -55,7 +55,7 @@ pip install ibverbs        # prebuilt abi3 manylinux wheel (once published)
 Building from source (needs the rdma-core dev headers + a compiler):
 
 ```bash
-pip install "Cython>=3.0" "setuptools>=64" wheel
+pip install "Cython>=3.0" "setuptools>=77" wheel
 pip install ./ibverbs       # or: pip install -e ./ibverbs
 ```
 
@@ -120,20 +120,35 @@ src = torch.arange(4096, dtype=torch.float32, device="cuda:0")
 dst = torch.zeros(4096, dtype=torch.float32, device="cuda:0")
 
 access = ib.AccessFlags.LOCAL_WRITE | ib.AccessFlags.REMOTE_WRITE
-src_mr = ib.cuda.register_tensor(pd, src, access)   # -> GpuMR (dma-buf backed)
+src_mr = ib.cuda.register_tensor(pd, src, access)   # retains src until close()
 dst_mr = ib.cuda.register_tensor(pd, dst, access)
 
 # RDMA-write one GPU buffer into another, with no host staging on the data path.
+torch.cuda.synchronize(src.device)  # source-producing CUDA work must be done
 qp.post_send(ib.SendWR(
     wr_id=1, sg_list=[src_mr.sge()], opcode=ib.WROpcode.RDMA_WRITE,
     send_flags=ib.SendFlags.SIGNALED,
     remote_addr=dst_mr.addr, rkey=dst_mr.rkey))
 for wc in qp.send_cq.poll(16):
     wc.raise_for_status()
+
+# On the receiver, after the peer has signaled that its write is complete,
+# order the inbound NIC writes before launching CUDA work that consumes dst.
+with torch.cuda.device(dst.device):
+    ib.cuda.flush_gpudirect_writes()
 ```
 
 `GpuMR` wraps the `MR` with the correct device address (`ibv_mr.addr` is not
-meaningful for dma-buf MRs), and exposes `.sge()`, `.addr`, `.lkey`, `.rkey`.
+meaningful for dma-buf MRs), retains the tensor allocation until `close()`, and
+exposes `.sge()`, `.addr`, `.lkey`, `.rkey`.
+
+CUDA work and NIC work are separate ordering domains. Synchronize the stream
+that produced an outbound tensor before posting it. For inbound `SEND`, RDMA
+read, or RDMA write, wait for the corresponding completion or protocol-level
+notification, then call `flush_gpudirect_writes()` in the destination CUDA
+context before consuming the tensor. A one-sided RDMA write does not create a
+remote CQ entry by itself; use write-with-immediate or an out-of-band message
+to notify the receiver.
 
 Under the hood there are two registration paths, chosen automatically:
 
@@ -145,7 +160,9 @@ mr = pd.reg_mr(tensor.data_ptr(), nbytes, access)
 ```
 
 For a **host** (CPU) torch tensor or numpy array, `ib.reg_tensor(pd, tensor,
-access)` registers it directly. `tests/test_gpudirect.py` performs real
+access)` registers it directly and retains the allocation. Both tensor helpers
+require contiguous, non-empty tensors; split any single SGE larger than
+`2**32 - 1` bytes into multiple entries. `tests/test_gpudirect.py` performs real
 GPU-to-GPU RDMA writes, reads, and sends verified with `torch.equal`.
 
 ## Feature coverage

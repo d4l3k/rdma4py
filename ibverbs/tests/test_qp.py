@@ -46,6 +46,15 @@ def test_qp_query_reports_caps(ctx, pd):
     cq.close()
 
 
+def test_qp_modify_rejects_unknown_attribute(ctx, pd):
+    cq = ctx.create_cq(16)
+    qp = pd.create_qp(ib.QPInitAttr(send_cq=cq, recv_cq=cq))
+    with pytest.raises(TypeError, match="unknown QP attribute"):
+        qp.modify(ib.QPAttrMask.STATE, qp_satte=ib.QPState.INIT)
+    qp.close()
+    cq.close()
+
+
 def test_post_recv_on_init_qp(ctx, pd):
     cq = ctx.create_cq(16)
     qp = pd.create_qp(ib.QPInitAttr(send_cq=cq, recv_cq=cq, qp_type=ib.QPType.RC))

@@ -66,6 +66,7 @@ def test_gpudirect_rdma_write(loopback):
     src_mr = _register(pd, src)
     dst_mr = _register(pd, dst)
 
+    torch.cuda.synchronize(src.device)
     a.qp.post_send(ib.SendWR(
         wr_id=1, sg_list=[src_mr.sge()], opcode=ib.WROpcode.RDMA_WRITE,
         send_flags=ib.SendFlags.SIGNALED, remote_addr=dst_mr.addr,
@@ -73,7 +74,8 @@ def test_gpudirect_rdma_write(loopback):
     wc = a.poll_one()
     assert wc.status == ib.WCStatus.SUCCESS, wc
 
-    torch.cuda.synchronize()
+    with torch.cuda.device(dst.device):
+        ibcuda.flush_gpudirect_writes()
     assert torch.equal(src, dst)   # data moved GPU->GPU with no host staging
 
     src_mr.close()
@@ -87,6 +89,7 @@ def test_gpudirect_rdma_read(loopback):
     local_mr = _register(pd, local)
     remote_mr = _register(pd, remote)
 
+    torch.cuda.synchronize(remote.device)
     a.qp.post_send(ib.SendWR(
         wr_id=2, sg_list=[local_mr.sge()], opcode=ib.WROpcode.RDMA_READ,
         send_flags=ib.SendFlags.SIGNALED, remote_addr=remote_mr.addr,
@@ -94,7 +97,8 @@ def test_gpudirect_rdma_read(loopback):
     wc = a.poll_one()
     assert wc.status == ib.WCStatus.SUCCESS, wc
 
-    torch.cuda.synchronize()
+    with torch.cuda.device(local.device):
+        ibcuda.flush_gpudirect_writes()
     assert torch.equal(local, remote)
 
     local_mr.close()
@@ -111,6 +115,7 @@ def test_gpudirect_send_recv_between_gpus(loopback):
     dst_mr = _register(pd, dst)
 
     b.qp.post_recv(ib.RecvWR(wr_id=3, sg_list=[dst_mr.sge()]))
+    torch.cuda.synchronize(src.device)
     a.qp.post_send(ib.SendWR(wr_id=4, sg_list=[src_mr.sge()],
                              opcode=ib.WROpcode.SEND,
                              send_flags=ib.SendFlags.SIGNALED))
@@ -119,7 +124,8 @@ def test_gpudirect_send_recv_between_gpus(loopback):
     assert swc.status == ib.WCStatus.SUCCESS, swc
     assert rwc.status == ib.WCStatus.SUCCESS, rwc
 
-    torch.cuda.synchronize()
+    with torch.cuda.device(dst.device):
+        ibcuda.flush_gpudirect_writes()
     assert torch.equal(src.cpu(), dst.cpu())
 
     src_mr.close()

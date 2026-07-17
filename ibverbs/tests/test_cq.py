@@ -43,6 +43,13 @@ def test_req_notify_on_channel_cq(ctx):
     ch.close()
 
 
+def test_cannot_ack_undelivered_event(ctx):
+    cq = ctx.create_cq(16)
+    with pytest.raises(ValueError, match="more CQ events"):
+        cq.ack_events()
+    cq.close()
+
+
 def test_cq_context_manager(ctx):
     with ctx.create_cq(32) as cq:
         assert cq.cqe >= 32

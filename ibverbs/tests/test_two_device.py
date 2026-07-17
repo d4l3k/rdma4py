@@ -46,6 +46,12 @@ def test_rdma_write_across_two_nics(active_port_list):
 
     ctx_a = None
     ctx_b = None
+    pd_a = None
+    pd_b = None
+    ep_a = None
+    ep_b = None
+    src = None
+    dst = None
     for dev in ib.get_device_list():
         if dev.name == name_a:
             ctx_a = dev.open()
@@ -84,13 +90,19 @@ def test_rdma_write_across_two_nics(active_port_list):
         assert wc.status == ib.WCStatus.SUCCESS, wc
         assert dst.get_bytes(len(payload)) == payload
 
-        src.close()
-        dst.close()
-        ep_a.close()
-        ep_b.close()
-        pd_a.close()
-        pd_b.close()
     finally:
+        if src is not None:
+            src.close()
+        if dst is not None:
+            dst.close()
+        if ep_a is not None:
+            ep_a.close()
+        if ep_b is not None:
+            ep_b.close()
+        if pd_a is not None:
+            pd_a.close()
+        if pd_b is not None:
+            pd_b.close()
         if ctx_a is not None:
             ctx_a.close()
         if ctx_b is not None:
