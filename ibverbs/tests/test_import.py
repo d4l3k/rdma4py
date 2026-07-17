@@ -1,8 +1,9 @@
 def test_import_and_version():
+    from importlib.metadata import version
+
     import ibverbs
 
-    assert isinstance(ibverbs.__version__, str)
-    assert ibverbs.__version__
+    assert ibverbs.__version__ == version("ibverbs")
 
 
 def test_extension_is_linked():

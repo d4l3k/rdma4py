@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ibverbs"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Low-level Pythonic bindings for libibverbs (RDMA), with GPUDirect support"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -22,6 +22,9 @@ classifiers = [
 ]
 # No runtime dependencies: the library only needs libibverbs at load time.
 dependencies = []
+
+[tool.setuptools.dynamic]
+version = { attr = "ibverbs._version.__version__" }
 
 [project.optional-dependencies]
 test = ["pytest>=7", "numpy"]
@@ -57,7 +60,7 @@ build-frontend = "build"
 skip = ["*-musllinux*"]
 test-requires = ["pytest", "numpy"]
 # Hardware/GPU tests self-skip when no NIC/CUDA is present in CI.
-test-command = "pytest -rs -m 'not gpu' {project}/tests"
+test-command = "pytest -rs -m 'not gpu' {package}/tests"
 
 [tool.cibuildwheel.linux]
 # manylinux images are AlmaLinux-based (dnf/yum).

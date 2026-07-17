@@ -18,7 +18,7 @@ The compiled fast paths live in :mod:`ibverbs._ibverbs`; enums in
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+from ._version import __version__
 
 from ._ibverbs import (
     AH,
