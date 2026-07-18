@@ -34,7 +34,7 @@ jobs:
         working-directory: .
         shell: bash
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             version=$(date -u +'%Y.%-m.%-d')
           elif [[ "$GITHUB_REF" == refs/tags/efa-v* ]]; then
             version=${GITHUB_REF_NAME#efa-v}
@@ -132,6 +132,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >-
       (github.event_name == 'schedule') ||
+      (github.event_name == 'workflow_dispatch') ||
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/efa-v'))
     permissions:
       id-token: write
