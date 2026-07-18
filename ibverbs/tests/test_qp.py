@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import ibverbs as ib
 import numpy as np
 import pytest
-
-import ibverbs as ib
 
 
 @pytest.fixture()
@@ -36,8 +35,11 @@ def test_qp_to_init(ctx, pd):
 
 def test_qp_query_reports_caps(ctx, pd):
     cq = ctx.create_cq(16)
-    qp = pd.create_qp(ib.QPInitAttr(send_cq=cq, recv_cq=cq, qp_type=ib.QPType.RC,
-                                    max_send_wr=64, max_recv_wr=64))
+    qp = pd.create_qp(
+        ib.QPInitAttr(
+            send_cq=cq, recv_cq=cq, qp_type=ib.QPType.RC, max_send_wr=64, max_recv_wr=64
+        )
+    )
     attrs, cap = qp.query()
     assert cap.max_send_wr >= 64
     assert cap.max_recv_wr >= 64
@@ -81,8 +83,9 @@ def test_create_srq_and_post(ctx, pd):
 def test_create_qp_with_srq(ctx, pd):
     cq = ctx.create_cq(16)
     srq = pd.create_srq(max_wr=32)
-    qp = pd.create_qp(ib.QPInitAttr(send_cq=cq, recv_cq=cq, qp_type=ib.QPType.RC,
-                                    srq=srq))
+    qp = pd.create_qp(
+        ib.QPInitAttr(send_cq=cq, recv_cq=cq, qp_type=ib.QPType.RC, srq=srq)
+    )
     assert qp.srq is srq
     qp.close()
     srq.close()
@@ -94,8 +97,9 @@ def test_create_ah(ctx, pd, dev_name, first_active):
 
     _, port = first_active
     gid_index, gid = find_roce_gid(ctx, dev_name, port)
-    attr = ib.AHAttr(dgid=gid.raw, sgid_index=gid_index, port_num=port,
-                     is_global=1, hop_limit=1)
+    attr = ib.AHAttr(
+        dgid=gid.raw, sgid_index=gid_index, port_num=port, is_global=1, hop_limit=1
+    )
     ah = pd.create_ah(attr)
     assert ah is not None
     ah.close()

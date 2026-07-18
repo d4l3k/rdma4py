@@ -1,0 +1,14 @@
+{
+  "exclude": [
+    ".*/build/.*",
+    ".*/dist/.*",
+    ".*/\\.venv[^/]*/.*",
+    ".*/.*\\.egg-info/.*"
+  ],
+  "site_package_search_strategy": "all",
+  "source_directories": [
+    "efa/src",
+    "ibverbs/src"
+  ],
+  "strict": false
+}

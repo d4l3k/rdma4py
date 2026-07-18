@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
 import ibverbs as ib
 import ibverbs.cuda as ibcuda
+import pytest
 
 
 class FakeTensor:
@@ -53,9 +52,9 @@ def test_cuda_register_retains_tensor_on_peermem_fallback(monkeypatch):
     tensor = FakeTensor()
     pd = FakePD()
     monkeypatch.setattr(
-        ibcuda, "dmabuf_fd", lambda *args: (_ for _ in ()).throw(
-            RuntimeError("no dma-buf")
-        )
+        ibcuda,
+        "dmabuf_fd",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("no dma-buf")),
     )
 
     gmr = ibcuda.register_tensor(pd, tensor, ib.AccessFlags.LOCAL_WRITE)

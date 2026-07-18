@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import select
 
-import pytest
-
 import ibverbs as ib
-from _rc import HostBuffer, Endpoint, FULL_ACCESS
+import pytest
+from _rc import FULL_ACCESS, HostBuffer
 
 pytestmark = pytest.mark.integration
 
@@ -24,10 +23,12 @@ def test_completion_channel_delivers_event(ctx, dev_name, first_active):
     channel = ctx.create_comp_channel()
     scq = ctx.create_cq(16, channel=channel)
     rcq = ctx.create_cq(16)
-    send_qp = pd.create_qp(ib.QPInitAttr(send_cq=scq, recv_cq=scq,
-                                         qp_type=ib.QPType.RC))
-    recv_qp = pd.create_qp(ib.QPInitAttr(send_cq=rcq, recv_cq=rcq,
-                                         qp_type=ib.QPType.RC))
+    send_qp = pd.create_qp(
+        ib.QPInitAttr(send_cq=scq, recv_cq=scq, qp_type=ib.QPType.RC)
+    )
+    recv_qp = pd.create_qp(
+        ib.QPInitAttr(send_cq=rcq, recv_cq=rcq, qp_type=ib.QPType.RC)
+    )
 
     info_s = ib.local_qp_info(send_qp, pa, gid, port=port)
     info_r = ib.local_qp_info(recv_qp, pa, gid, port=port)
@@ -39,10 +40,16 @@ def test_completion_channel_delivers_event(ctx, dev_name, first_active):
     src.set_bytes(b"event-driven-completion")
 
     scq.req_notify()
-    send_qp.post_send(ib.SendWR(wr_id=99, sg_list=[src.sge(64)],
-                                opcode=ib.WROpcode.RDMA_WRITE,
-                                send_flags=ib.SendFlags.SIGNALED,
-                                remote_addr=dst.addr, rkey=dst.rkey))
+    send_qp.post_send(
+        ib.SendWR(
+            wr_id=99,
+            sg_list=[src.sge(64)],
+            opcode=ib.WROpcode.RDMA_WRITE,
+            send_flags=ib.SendFlags.SIGNALED,
+            remote_addr=dst.addr,
+            rkey=dst.rkey,
+        )
+    )
 
     # Block on the channel fd until the NIC signals a completion.
     r, _, _ = select.select([channel.fd], [], [], 10)

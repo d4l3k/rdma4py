@@ -8,9 +8,8 @@ path for the integration tests.
 
 from __future__ import annotations
 
-import numpy as np
-
 import ibverbs as ib
+import numpy as np
 
 FULL_ACCESS = (
     ib.AccessFlags.LOCAL_WRITE
@@ -41,21 +40,22 @@ class HostBuffer:
         return self.mr.lkey
 
     def sge(self, length=None, offset=0):
-        return ib.SGE(self.mr, length if length is not None else self.array.nbytes,
-                      offset=offset)
+        return ib.SGE(
+            self.mr, length if length is not None else self.array.nbytes, offset=offset
+        )
 
     def set_bytes(self, data: bytes, offset=0):
-        self.array[offset:offset + len(data)] = np.frombuffer(data, dtype=np.uint8)
+        self.array[offset : offset + len(data)] = np.frombuffer(data, dtype=np.uint8)
 
     def get_bytes(self, length=None, offset=0) -> bytes:
         end = self.array.nbytes if length is None else offset + length
         return self.array[offset:end].tobytes()
 
     def read_u64(self, offset=0) -> int:
-        return int(self.array[offset:offset + 8].view(np.uint64)[0])
+        return int(self.array[offset : offset + 8].view(np.uint64)[0])
 
     def write_u64(self, value, offset=0):
-        self.array[offset:offset + 8].view(np.uint64)[0] = np.uint64(value)
+        self.array[offset : offset + 8].view(np.uint64)[0] = np.uint64(value)
 
     def close(self):
         self.mr.close()
@@ -70,16 +70,22 @@ class Endpoint:
         self.port = port
         self.cq = ctx.create_cq(cqe)
         self.qp = pd.create_qp(
-            ib.QPInitAttr(send_cq=self.cq, recv_cq=self.cq, qp_type=ib.QPType.RC,
-                          max_send_wr=cqe, max_recv_wr=cqe)
+            ib.QPInitAttr(
+                send_cq=self.cq,
+                recv_cq=self.cq,
+                qp_type=ib.QPType.RC,
+                max_send_wr=cqe,
+                max_recv_wr=cqe,
+            )
         )
 
     def info(self, port_attr, gid, psn=0):
         return ib.local_qp_info(self.qp, port_attr, gid, port=self.port, psn=psn)
 
     def connect(self, remote, gid_index, access=FULL_ACCESS):
-        ib.connect_rc(self.qp, remote, port=self.port, sgid_index=gid_index,
-                      access=access)
+        ib.connect_rc(
+            self.qp, remote, port=self.port, sgid_index=gid_index, access=access
+        )
 
     def poll_one(self, spins=200000):
         for _ in range(spins):

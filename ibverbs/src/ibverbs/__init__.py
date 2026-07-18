@@ -18,33 +18,32 @@ The compiled fast paths live in :mod:`ibverbs._ibverbs`; enums in
 
 from __future__ import annotations
 
-from ._version import __version__
-
-from ._ibverbs import (
+from ._ibverbs import (  # pyre-ignore[21]: Implemented by the Cython extension.
     AH,
-    CQ,
-    MR,
-    PD,
-    QP,
-    SRQ,
     AHAttr,
     AsyncEvent,
     CompChannel,
     CompletionError,
     Context,
+    CQ,
     Device,
     DeviceAttr,
+    get_device_list,
     Gid,
+    MR,
+    PD,
     PortAttr,
+    QP,
     QPCap,
     QPInitAttr,
     RecvWR,
     SendWR,
     SGE,
+    SRQ,
     VerbsError,
     WC,
-    get_device_list,
 )
+from ._version import __version__
 from .enums import (
     AccessFlags,
     MTU,
@@ -59,26 +58,53 @@ from .enums import (
     WCStatus,
     WROpcode,
 )
-from .helpers import (
-    QPInfo,
-    connect_rc,
-    local_qp_info,
-    reg_tensor,
-    tensor_addr_len,
-)
+from .helpers import connect_rc, local_qp_info, QPInfo, reg_tensor, tensor_addr_len
 
 __all__ = [
     "__version__",
     # handles / core
-    "AH", "CQ", "MR", "PD", "QP", "SRQ", "AHAttr", "AsyncEvent", "CompChannel",
-    "Context", "Device", "DeviceAttr", "Gid", "PortAttr", "QPCap", "QPInitAttr",
-    "RecvWR", "SendWR", "SGE", "VerbsError", "CompletionError", "WC",
+    "AH",
+    "CQ",
+    "MR",
+    "PD",
+    "QP",
+    "SRQ",
+    "AHAttr",
+    "AsyncEvent",
+    "CompChannel",
+    "Context",
+    "Device",
+    "DeviceAttr",
+    "Gid",
+    "PortAttr",
+    "QPCap",
+    "QPInitAttr",
+    "RecvWR",
+    "SendWR",
+    "SGE",
+    "VerbsError",
+    "CompletionError",
+    "WC",
     "get_device_list",
     # enums
-    "AccessFlags", "MTU", "NodeType", "PortState", "QPAttrMask", "QPState",
-    "QPType", "SendFlags", "WCFlags", "WCOpcode", "WCStatus", "WROpcode",
+    "AccessFlags",
+    "MTU",
+    "NodeType",
+    "PortState",
+    "QPAttrMask",
+    "QPState",
+    "QPType",
+    "SendFlags",
+    "WCFlags",
+    "WCOpcode",
+    "WCStatus",
+    "WROpcode",
     # helpers
-    "QPInfo", "connect_rc", "local_qp_info", "reg_tensor", "tensor_addr_len",
+    "QPInfo",
+    "connect_rc",
+    "local_qp_info",
+    "reg_tensor",
+    "tensor_addr_len",
 ]
 
 # `ibverbs.cuda` (optional GPUDirect helpers) is intentionally NOT imported

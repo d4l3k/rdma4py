@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 import ibverbs as ib
-from _rc import HostBuffer, Endpoint, FULL_ACCESS
+import pytest
+from _rc import Endpoint, HostBuffer
 
 pytestmark = pytest.mark.integration
 
@@ -78,15 +77,22 @@ def test_rdma_write_across_two_nics(active_port_list):
         payload = bytes((i ^ 0x5A) & 0xFF for i in range(256))
         src.set_bytes(payload)
 
-        ep_a.qp.post_send(ib.SendWR(
-            wr_id=1, sg_list=[src.sge(len(payload))],
-            opcode=ib.WROpcode.RDMA_WRITE, send_flags=ib.SendFlags.SIGNALED,
-            remote_addr=dst.addr, rkey=dst.rkey))
+        ep_a.qp.post_send(
+            ib.SendWR(
+                wr_id=1,
+                sg_list=[src.sge(len(payload))],
+                opcode=ib.WROpcode.RDMA_WRITE,
+                send_flags=ib.SendFlags.SIGNALED,
+                remote_addr=dst.addr,
+                rkey=dst.rkey,
+            )
+        )
         wc = _poll_until(ep_a.cq, timeout=10.0)
 
         if wc is None or wc.status == ib.WCStatus.RETRY_EXC_ERR:
-            pytest.skip(f"{name_a} and {name_b} are not on a mutually routable "
-                        "RoCE fabric")
+            pytest.skip(
+                f"{name_a} and {name_b} are not on a mutually routable " "RoCE fabric"
+            )
         assert wc.status == ib.WCStatus.SUCCESS, wc
         assert dst.get_bytes(len(payload)) == payload
 

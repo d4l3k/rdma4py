@@ -3,15 +3,15 @@ requires = ["setuptools>=77", "Cython>=3.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ibverbs"
+name = "efa"
 dynamic = ["version"]
-description = "Low-level Pythonic bindings for libibverbs (RDMA), with GPUDirect support"
+description = "Low-level Pythonic bindings for AWS EFA (SRD RDMA via libibverbs/libefa), with GPUDirect support"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 authors = [{ name = "Tristan Rice" }]
-keywords = ["rdma", "ibverbs", "infiniband", "roce", "gpudirect", "networking"]
+keywords = ["efa", "srd", "rdma", "ibverbs", "aws", "gpudirect", "networking"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -20,18 +20,18 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: System :: Networking",
 ]
-# No runtime dependencies: the library only needs libibverbs at load time.
+# No runtime dependencies: the library only needs libibverbs + libefa at load time.
 dependencies = []
 
 [tool.setuptools.dynamic]
-version = { attr = "ibverbs._version.__version__" }
+version = { attr = "efa._version.__version__" }
 
 [project.optional-dependencies]
 test = ["pytest>=7", "numpy"]
 gpu = ["torch"]
 
 [project.urls]
-Documentation = "https://d4l3k.github.io/rdma4py/ibverbs/"
+Documentation = "https://d4l3k.github.io/rdma4py/efa/"
 Homepage = "https://github.com/d4l3k/rdma4py"
 Repository = "https://github.com/d4l3k/rdma4py"
 
@@ -44,15 +44,15 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 markers = [
-    "integration: exercises real RDMA hardware (loopback / two-NIC)",
+    "integration: exercises real EFA hardware (loopback / two-NIC)",
     "gpu: requires a CUDA GPU and torch (GPUDirect)",
 ]
 testpaths = ["tests"]
 
 # Single abi3 wheel per platform (works on CPython 3.9+). The extension is
-# built against rdma-core headers but dlopens libibverbs at runtime, so the
-# build image only needs the -devel headers; the wheel has no external NEEDED
-# library and is trivially manylinux-compliant.
+# built against rdma-core headers but dlopens libibverbs/libefa at runtime, so
+# the build image only needs the -devel headers; the wheel has no external
+# NEEDED library and is trivially manylinux-compliant.
 [tool.cibuildwheel]
 # cibuildwheel selects a CPython build environment; setup.py retags the
 # resulting extension as cp39-abi3 via Py_LIMITED_API.
@@ -60,7 +60,7 @@ build = "cp39-*"
 build-frontend = "build"
 skip = ["*-musllinux*"]
 test-requires = ["pytest", "numpy"]
-# Hardware/GPU tests self-skip when no NIC/CUDA is present in CI.
+# Hardware/GPU tests self-skip when no EFA NIC/CUDA is present in CI.
 test-command = "pytest -rs -m 'not gpu' {package}/tests"
 
 [tool.cibuildwheel.linux]

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-import ibverbs as ib
-
 
 def test_create_cq(ctx):
     cq = ctx.create_cq(16)

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 import ibverbs as ib
+import pytest
 
 
 def test_get_device_list_returns_devices():
@@ -25,7 +24,6 @@ def test_open_and_query_device(ctx):
 
 
 def test_query_port(ctx):
-    da = ctx.query_device()
     pa = ctx.query_port(1)
     assert pa.gid_tbl_len > 0
     assert pa.state in {s.value for s in ib.PortState}
@@ -33,7 +31,6 @@ def test_query_port(ctx):
 
 
 def test_query_gid(ctx):
-    pa = ctx.query_port(1)
     gid = ctx.query_gid(1, 0)
     assert isinstance(gid, ib.Gid)
     assert len(gid.raw) == 16

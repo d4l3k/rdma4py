@@ -1,0 +1,30 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lintrunner:
+    name: lintrunner
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@v7
+      - name: Install lint dependencies
+        run: uv pip install --system -r requirements-lint.txt
+      - name: Initialize linters
+        run: lintrunner init
+      - name: Run linters
+        run: lintrunner --force-color --all-files

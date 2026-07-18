@@ -11,10 +11,10 @@ dma-buf fd (the fd libibverbs needs for ``ibv_reg_dmabuf_mr``)::
 
 Typical use::
 
-    import ibverbs, ibverbs.cuda, torch
+    import efa, efa.cuda, torch
     t = torch.zeros(1 << 20, dtype=torch.uint8, device="cuda")
-    gmr = ibverbs.cuda.register_tensor(pd, t, ibverbs.AccessFlags.LOCAL_WRITE)
-    qp.post_send(ibverbs.SendWR(sg_list=[gmr.sge()], ...))
+    gmr = efa.cuda.register_tensor(pd, t, efa.AccessFlags.LOCAL_WRITE)
+    qp.post_send(efa.SendWR(sg_list=[gmr.sge()], dest=peer, ...))
 
 Before the NIC reads a tensor, synchronize the CUDA stream that produced it.
 After an inbound completion, call :func:`flush_gpudirect_writes` before CUDA
@@ -26,7 +26,7 @@ from __future__ import annotations
 import ctypes
 import os
 
-from . import _ibverbs  # pyre-ignore[21]: Implemented by the Cython extension.
+from . import _efa  # pyre-ignore[21]: Implemented by the Cython extension.
 
 _PAGE = os.sysconf("SC_PAGESIZE")
 _DMA_BUF_FD = 1  # CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD
@@ -111,9 +111,9 @@ class GpuMR:
         length = int(length)
         if length < 0 or length > self.length - offset:
             raise ValueError("SGE range exceeds the GPU memory region")
-        return _ibverbs.SGE(
-            self.addr, length, lkey=self.lkey, offset=offset
-        )._keepalive(self)
+        return _efa.SGE(self.addr, length, lkey=self.lkey, offset=offset)._keepalive(
+            self
+        )
 
     def close(self):
         self.mr.close()
@@ -195,8 +195,7 @@ def flush_gpudirect_writes(*, all_devices: bool = False) -> None:
     flush = getattr(_cuda(), "cuFlushGPUDirectRDMAWrites", None)
     if flush is None:
         raise RuntimeError(
-            "cuFlushGPUDirectRDMAWrites is unavailable; CUDA 11.3 or newer "
-            "is required"
+            "cuFlushGPUDirectRDMAWrites is unavailable; CUDA 11.3 or newer is required"
         )
     scope = _FLUSH_TO_ALL_DEVICES if all_devices else _FLUSH_TO_OWNER
     rc = flush(_FLUSH_TARGET_CURRENT_CTX, scope)
@@ -216,7 +215,7 @@ def register_tensor(pd, tensor, access) -> GpuMR:
     is_cuda = getattr(tensor, "is_cuda", None)
     if is_cuda is not None and not bool(is_cuda):
         raise ValueError(
-            "register_tensor requires a CUDA tensor; use ibverbs.reg_tensor "
+            "register_tensor requires a CUDA tensor; use efa.reg_tensor "
             "for host tensors"
         )
     ptr, n = tensor_ptr_len(tensor)

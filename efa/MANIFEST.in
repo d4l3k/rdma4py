@@ -1,0 +1,3 @@
+include README.md CLAUDE.md LICENSE MANIFEST.in pyproject.toml setup.py
+include src/efa/*.pyx src/efa/*.pxd
+recursive-include tests *.py

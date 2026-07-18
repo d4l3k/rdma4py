@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import ibverbs as ib
 import numpy as np
 import pytest
-
-import ibverbs as ib
 
 
 @pytest.fixture()
@@ -21,8 +20,11 @@ def test_alloc_pd(pd):
 
 def test_reg_mr_host_buffer(pd):
     buf = np.zeros(8192, dtype=np.uint8)
-    access = (ib.AccessFlags.LOCAL_WRITE | ib.AccessFlags.REMOTE_WRITE
-              | ib.AccessFlags.REMOTE_READ)
+    access = (
+        ib.AccessFlags.LOCAL_WRITE
+        | ib.AccessFlags.REMOTE_WRITE
+        | ib.AccessFlags.REMOTE_READ
+    )
     mr = pd.reg_mr(buf.ctypes.data, buf.nbytes, access)
     assert mr.addr == buf.ctypes.data
     assert mr.length == buf.nbytes

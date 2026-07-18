@@ -1,0 +1,146 @@
+name: build & publish efa
+
+on:
+  push:
+    branches: [main]
+    tags: ["efa-v*"]
+    paths:
+      - "efa/**"
+      - ".github/workflows/publish-efa.yml"
+  pull_request:
+    paths:
+      - "efa/**"
+      - ".github/workflows/publish-efa.yml"
+  schedule:
+    - cron: "47 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: efa
+
+jobs:
+  resolve_version:
+    name: resolve package version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Select release version
+        id: version
+        working-directory: .
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            version=$(date -u +'%Y.%-m.%-d')
+          elif [[ "$GITHUB_REF" == refs/tags/efa-v* ]]; then
+            version=${GITHUB_REF_NAME#efa-v}
+          else
+            version=0.1.0
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build_wheels:
+    name: manylinux ${{ matrix.arch }} (abi3)
+    needs: resolve_version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Stamp package version
+        env:
+          PACKAGE_VERSION: ${{ needs.resolve_version.outputs.version }}
+        run: printf '__version__ = "%s"\n' "$PACKAGE_VERSION" > src/efa/_version.py
+
+      - name: Set up QEMU (for aarch64)
+        if: matrix.arch == 'aarch64'
+        uses: docker/setup-qemu-action@v4
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v4.1.0
+        with:
+          package-dir: ${{ github.workspace }}/efa
+          output-dir: ${{ github.workspace }}/wheelhouse
+        env:
+          CIBW_ARCHS_LINUX: ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: efa-wheels-${{ matrix.arch }}
+          path: wheelhouse/*.whl
+
+  build_sdist:
+    name: sdist
+    needs: resolve_version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Stamp package version
+        env:
+          PACKAGE_VERSION: ${{ needs.resolve_version.outputs.version }}
+        run: printf '__version__ = "%s"\n' "$PACKAGE_VERSION" > src/efa/_version.py
+      - name: Install rdma-core headers
+        run: sudo apt-get update && sudo apt-get install -y libibverbs-dev
+      - name: Build sdist
+        run: pipx run build --sdist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: efa-sdist
+          path: efa/dist/*.tar.gz
+
+  verify_abi3:
+    name: CPython ${{ matrix.python-version }} (x86_64 abi3)
+    needs: build_wheels
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: efa-wheels-x86_64
+          path: ${{ github.workspace }}/abi3-wheel
+      - name: Install EFA runtime
+        working-directory: .
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y libibverbs1 ibverbs-providers
+      - name: Install and import wheel
+        working-directory: .
+        run: |
+          python -m pip install "$GITHUB_WORKSPACE"/abi3-wheel/efa-*.whl
+          python -c "import efa; assert efa._efa._linked()"
+
+  publish:
+    name: publish to PyPI
+    needs: [build_wheels, build_sdist, verify_abi3]
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'schedule') ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/efa-v'))
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          skip-existing: true

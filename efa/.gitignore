@@ -1,0 +1,11 @@
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.so
+# Cython-generated C sources
+src/efa/_efa.c
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv*/

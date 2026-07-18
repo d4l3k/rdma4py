@@ -7,14 +7,14 @@ host. Tests that need a feature the hardware lacks are skipped, never failed.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 # torch's CUDA memory must be VMM-backed to be dma-buf exportable for
 # GPUDirect. Set this before torch is ever imported (conftest loads first).
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-import pytest
-
 import ibverbs as ib
+import pytest
 
 
 def _read_sysfs(path: str) -> str | None:
@@ -28,6 +28,15 @@ def _read_sysfs(path: str) -> str | None:
 def _is_link_local(raw: bytes) -> bool:
     # IPv6 link-local (fe80::/10) GIDs do not loop back / route to themselves.
     return raw[0] == 0xFE and (raw[1] & 0xC0) == 0x80
+
+
+def _supports_rc_tests(dev_name: str) -> bool:
+    """Exclude EFA, whose native SRD transport has a dedicated test suite."""
+    driver = Path(f"/sys/class/infiniband/{dev_name}/device/driver")
+    try:
+        return driver.resolve().name != "efa"
+    except OSError:
+        return True
 
 
 def find_roce_gid(ctx, dev_name: str, port: int):
@@ -62,12 +71,14 @@ def active_ports():
     """Yield ``(device, port)`` for every ACTIVE port on the host."""
     out = []
     for dev in ib.get_device_list():
+        if not _supports_rc_tests(dev.name):
+            continue
         ctx = dev.open()
         try:
             da = ctx.query_device()
             for port in range(1, da.phys_port_cnt + 1):
                 pa = ctx.query_port(port)
-                if pa.state == ib.PortState.ACTIVE:
+                if pa.state == ib.PortState.ACTIVE and pa.gid_tbl_len > 0:
                     out.append((dev.name, port))
         finally:
             ctx.close()
@@ -76,9 +87,10 @@ def active_ports():
 
 @pytest.fixture(scope="session")
 def all_devices():
-    devs = ib.get_device_list()
+    active_names = {name for name, _ in active_ports()}
+    devs = [dev for dev in ib.get_device_list() if dev.name in active_names]
     if not devs:
-        pytest.skip("no RDMA devices present")
+        pytest.skip("no non-EFA RDMA device with an ACTIVE port available")
     return devs
 
 

@@ -7,10 +7,9 @@ library itself never imports torch.
 
 from __future__ import annotations
 
-import pytest
-
 import ibverbs as ib
 import ibverbs.cuda as ibcuda
+import pytest
 from _rc import Endpoint, FULL_ACCESS
 
 pytestmark = [pytest.mark.integration, pytest.mark.gpu]
@@ -31,10 +30,12 @@ def loopback(ctx, dev_name, first_active):
     pa = ctx.query_port(port)
     a = Endpoint(ctx, pd, port)
     b = Endpoint(ctx, pd, port)
-    ib.connect_rc(a.qp, b.info(pa, gid), port=port, sgid_index=gid_index,
-                  access=FULL_ACCESS)
-    ib.connect_rc(b.qp, a.info(pa, gid), port=port, sgid_index=gid_index,
-                  access=FULL_ACCESS)
+    ib.connect_rc(
+        a.qp, b.info(pa, gid), port=port, sgid_index=gid_index, access=FULL_ACCESS
+    )
+    ib.connect_rc(
+        b.qp, a.info(pa, gid), port=port, sgid_index=gid_index, access=FULL_ACCESS
+    )
     yield a, b, pd
     a.close()
     b.close()
@@ -61,22 +62,28 @@ def test_register_torch_cuda_tensor(ctx):
 
 def test_gpudirect_rdma_write(loopback):
     a, b, pd = loopback
-    src = (torch.arange(4096, dtype=torch.float32, device="cuda:0") * 1.5)
+    src = torch.arange(4096, dtype=torch.float32, device="cuda:0") * 1.5
     dst = torch.zeros(4096, dtype=torch.float32, device="cuda:0")
     src_mr = _register(pd, src)
     dst_mr = _register(pd, dst)
 
     torch.cuda.synchronize(src.device)
-    a.qp.post_send(ib.SendWR(
-        wr_id=1, sg_list=[src_mr.sge()], opcode=ib.WROpcode.RDMA_WRITE,
-        send_flags=ib.SendFlags.SIGNALED, remote_addr=dst_mr.addr,
-        rkey=dst_mr.rkey))
+    a.qp.post_send(
+        ib.SendWR(
+            wr_id=1,
+            sg_list=[src_mr.sge()],
+            opcode=ib.WROpcode.RDMA_WRITE,
+            send_flags=ib.SendFlags.SIGNALED,
+            remote_addr=dst_mr.addr,
+            rkey=dst_mr.rkey,
+        )
+    )
     wc = a.poll_one()
     assert wc.status == ib.WCStatus.SUCCESS, wc
 
     with torch.cuda.device(dst.device):
         ibcuda.flush_gpudirect_writes()
-    assert torch.equal(src, dst)   # data moved GPU->GPU with no host staging
+    assert torch.equal(src, dst)  # data moved GPU->GPU with no host staging
 
     src_mr.close()
     dst_mr.close()
@@ -90,10 +97,16 @@ def test_gpudirect_rdma_read(loopback):
     remote_mr = _register(pd, remote)
 
     torch.cuda.synchronize(remote.device)
-    a.qp.post_send(ib.SendWR(
-        wr_id=2, sg_list=[local_mr.sge()], opcode=ib.WROpcode.RDMA_READ,
-        send_flags=ib.SendFlags.SIGNALED, remote_addr=remote_mr.addr,
-        rkey=remote_mr.rkey))
+    a.qp.post_send(
+        ib.SendWR(
+            wr_id=2,
+            sg_list=[local_mr.sge()],
+            opcode=ib.WROpcode.RDMA_READ,
+            send_flags=ib.SendFlags.SIGNALED,
+            remote_addr=remote_mr.addr,
+            rkey=remote_mr.rkey,
+        )
+    )
     wc = a.poll_one()
     assert wc.status == ib.WCStatus.SUCCESS, wc
 
@@ -116,9 +129,14 @@ def test_gpudirect_send_recv_between_gpus(loopback):
 
     b.qp.post_recv(ib.RecvWR(wr_id=3, sg_list=[dst_mr.sge()]))
     torch.cuda.synchronize(src.device)
-    a.qp.post_send(ib.SendWR(wr_id=4, sg_list=[src_mr.sge()],
-                             opcode=ib.WROpcode.SEND,
-                             send_flags=ib.SendFlags.SIGNALED))
+    a.qp.post_send(
+        ib.SendWR(
+            wr_id=4,
+            sg_list=[src_mr.sge()],
+            opcode=ib.WROpcode.SEND,
+            send_flags=ib.SendFlags.SIGNALED,
+        )
+    )
     swc = a.poll_one()
     rwc = b.poll_one()
     assert swc.status == ib.WCStatus.SUCCESS, swc

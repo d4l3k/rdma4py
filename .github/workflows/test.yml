@@ -1,0 +1,41 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.package }} / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [efa, ibverbs]
+        python-version: ["3.9", "3.13"]
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v7
+      - name: Install RDMA headers and runtime
+        working-directory: .
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y libefa1 libibverbs-dev ibverbs-providers
+      - name: Install package and test dependencies
+        run: uv pip install --system -e ".[test]"
+      - name: Run tests
+        run: python -m pytest -rs -m "not gpu"

@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import ibverbs as ib
 import numpy as np
 import pytest
-
-import ibverbs as ib
 from ibverbs.helpers import QPInfo
 
 
@@ -82,7 +81,10 @@ def test_connect_rc_negotiates_minimum_path_mtu():
 
     remote = QPInfo(qp_num=1, psn=2, lid=0, gid=bytes(16), port=1, mtu=5)
     ib.connect_rc(
-        QP(), remote, port=1, sgid_index=0,
+        QP(),
+        remote,
+        port=1,
+        sgid_index=0,
         access=ib.AccessFlags.LOCAL_WRITE,
     )
     assert calls[1] == ("rtr", {"sgid_index": 0, "mtu": 3})
