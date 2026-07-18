@@ -6,11 +6,11 @@ on:
     tags: ["efa-v*"]
     paths:
       - "efa/**"
-      - ".github/workflows/publish-efa.yml"
+      - ".github/workflows/publish_efa.yml"
   pull_request:
     paths:
       - "efa/**"
-      - ".github/workflows/publish-efa.yml"
+      - ".github/workflows/publish_efa.yml"
   schedule:
     - cron: "47 5 * * *"
   workflow_dispatch:
