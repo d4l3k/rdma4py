@@ -18,6 +18,8 @@ import pytest
 
 @pytest.fixture(scope="session")
 def efa_devices():
+    if os.environ.get("RDMA4PY_SKIP_HARDWARE_TESTS") == "1":
+        pytest.skip("hardware tests disabled")
     devs = efa.get_efa_device_list()
     if not devs:
         pytest.skip("no EFA devices present")

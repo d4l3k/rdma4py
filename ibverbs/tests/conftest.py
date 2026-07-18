@@ -69,6 +69,8 @@ def find_roce_gid(ctx, dev_name: str, port: int):
 
 def active_ports():
     """Yield ``(device, port)`` for every ACTIVE port on the host."""
+    if os.environ.get("RDMA4PY_SKIP_HARDWARE_TESTS") == "1":
+        return []
     out = []
     for dev in ib.get_device_list():
         if not _supports_rc_tests(dev.name):

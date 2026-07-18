@@ -38,4 +38,6 @@ jobs:
       - name: Install package and test dependencies
         run: uv pip install --system -e ".[test]"
       - name: Run tests
+        env:
+          RDMA4PY_SKIP_HARDWARE_TESTS: "1"
         run: python -m pytest -rs -m "not gpu"
