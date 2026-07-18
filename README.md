@@ -1,5 +1,8 @@
 # rdma4py
 
+[![efa on PyPI](https://img.shields.io/pypi/v/efa?label=efa)](https://pypi.org/project/efa/)
+[![ibverbs on PyPI](https://img.shields.io/pypi/v/ibverbs?label=ibverbs)](https://pypi.org/project/ibverbs/)
+
 High-performance RDMA for Python.
 
 Documentation for both packages is published at
@@ -11,12 +14,14 @@ Low-level bindings for AWS Elastic Fabric Adapter, including SRD SEND and
 one-sided RDMA, EFA direct-verbs queries, and torch-friendly GPUDirect memory
 registration. No Python runtime dependencies and no torch/CUDA linkage.
 
-See [`efa/README.md`](efa/README.md) for setup, API examples, EFA peer rules,
-and hardware testing.
+Install the [EFA package from PyPI](https://pypi.org/project/efa/):
 
 ```bash
-pip install ./efa
+python -m pip install efa
 ```
+
+See [`efa/README.md`](efa/README.md) for system setup, API examples, EFA peer
+rules, GPUDirect usage, source installation, and hardware testing.
 
 ## [`ibverbs/`](ibverbs/) — low-level libibverbs bindings
 
@@ -25,13 +30,14 @@ building high-performance RDMA libraries in Python, with first-class
 **GPUDirect** support (register a GPU device pointer or an exported dma-buf fd).
 No runtime dependencies, no torch/CUDA linkage.
 
-See [`ibverbs/README.md`](ibverbs/README.md) for the API, quickstart, feature
-coverage, and testing instructions.
+Install the [ibverbs package from PyPI](https://pypi.org/project/ibverbs/):
 
 ```bash
-pip install "Cython>=3.0" "setuptools>=64" wheel
-pip install ./ibverbs
+python -m pip install ibverbs
 ```
+
+See [`ibverbs/README.md`](ibverbs/README.md) for system setup, the API,
+quickstart, feature coverage, source installation, and testing instructions.
 
 ## License
 

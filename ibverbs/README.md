@@ -49,7 +49,7 @@ path.
 ## Install
 
 ```bash
-pip install ibverbs        # prebuilt abi3 manylinux wheel (once published)
+pip install ibverbs        # prebuilt abi3 manylinux wheel
 ```
 
 Building from source (needs the rdma-core dev headers + a compiler):
