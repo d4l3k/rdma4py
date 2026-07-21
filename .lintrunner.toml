@@ -5,6 +5,9 @@ include_patterns = [
     "efa/**/*.pyi",
     "ibverbs/**/*.py",
     "ibverbs/**/*.pyi",
+    "nvmeof/**/*.py",
+    "nvmeof/**/*.pyi",
+    "benchmarks/**/*.py",
     "docs/**/*.py",
     "tools/**/*.py",
 ]
@@ -32,6 +35,9 @@ include_patterns = [
     "efa/**/*.pyi",
     "ibverbs/**/*.py",
     "ibverbs/**/*.pyi",
+    "nvmeof/**/*.py",
+    "nvmeof/**/*.pyi",
+    "benchmarks/**/*.py",
     "docs/**/*.py",
     "tools/**/*.py",
 ]
@@ -57,6 +63,8 @@ include_patterns = [
     "efa/src/efa/**/*.pyi",
     "ibverbs/src/ibverbs/**/*.py",
     "ibverbs/src/ibverbs/**/*.pyi",
+    "nvmeof/src/nvmeof/**/*.py",
+    "nvmeof/src/nvmeof/**/*.pyi",
 ]
 exclude_patterns = []
 init_command = [

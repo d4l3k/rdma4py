@@ -58,6 +58,8 @@ def _cuda():
             ctypes.c_ulonglong,
         ]
         _lib.cuMemGetHandleForAddressRange.restype = ctypes.c_int
+        _lib.cuCtxSynchronize.argtypes = []
+        _lib.cuCtxSynchronize.restype = ctypes.c_int
         flush = getattr(_lib, "cuFlushGPUDirectRDMAWrites", None)
         if flush is not None:
             flush.argtypes = [ctypes.c_int, ctypes.c_int]
@@ -204,6 +206,17 @@ def flush_gpudirect_writes(*, all_devices: bool = False) -> None:
         raise RuntimeError("cuFlushGPUDirectRDMAWrites failed: %s" % _cuda_err(rc))
 
 
+def synchronize() -> None:
+    """Wait for CUDA work in the current context before an RDMA device read.
+
+    This is the framework-independent ordering primitive for outbound
+    GPUDirect buffers. The caller must make the buffer's CUDA context current.
+    """
+    rc = _cuda().cuCtxSynchronize()
+    if rc != 0:
+        raise RuntimeError("cuCtxSynchronize failed: %s" % _cuda_err(rc))
+
+
 def register_tensor(pd, tensor, access) -> GpuMR:
     """Register a CUDA ``tensor`` for RDMA and return a :class:`GpuMR`.
 
@@ -247,6 +260,7 @@ __all__ = [
     "GpuMR",
     "dmabuf_fd",
     "flush_gpudirect_writes",
+    "synchronize",
     "tensor_ptr_len",
     "register_tensor",
 ]

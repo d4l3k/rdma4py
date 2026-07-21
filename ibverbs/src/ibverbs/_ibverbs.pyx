@@ -16,6 +16,7 @@ from libc.stdlib cimport calloc, free
 from libc.string cimport memset, memcpy, strcmp
 
 cimport ibverbs._libverbs as c
+cimport ibverbs._librdmacm as cm
 
 
 # --------------------------------------------------------------------------- #
@@ -35,6 +36,7 @@ cdef extern from "dlfcn.h" nogil:
     char *dlerror()
     int RTLD_NOW
     int RTLD_GLOBAL
+    int RTLD_LOCAL
 
 ctypedef c.ibv_device **(*fp_get_device_list)(int *) noexcept nogil
 ctypedef void (*fp_free_device_list)(c.ibv_device **) noexcept nogil
@@ -107,6 +109,27 @@ cdef fp_str_from_int _v_event_type_str = NULL
 cdef fp_str_from_int _v_wc_status_str = NULL
 
 
+# librdmacm is optional for base verbs users and loaded only when CM is used.
+ctypedef int (*fp_cm_getaddrinfo)(const char *, const char *, cm.rdma_addrinfo *, cm.rdma_addrinfo **) noexcept nogil
+ctypedef void (*fp_cm_freeaddrinfo)(cm.rdma_addrinfo *) noexcept nogil
+ctypedef int (*fp_cm_create_ep)(cm.rdma_cm_id **, cm.rdma_addrinfo *, c.ibv_pd *, c.ibv_qp_init_attr *) noexcept nogil
+ctypedef void (*fp_cm_destroy_ep)(cm.rdma_cm_id *) noexcept nogil
+ctypedef int (*fp_cm_create_qp)(cm.rdma_cm_id *, c.ibv_pd *, c.ibv_qp_init_attr *) noexcept nogil
+ctypedef void (*fp_cm_destroy_qp)(cm.rdma_cm_id *) noexcept nogil
+ctypedef int (*fp_cm_connect)(cm.rdma_cm_id *, cm.rdma_conn_param *) noexcept nogil
+ctypedef int (*fp_cm_disconnect)(cm.rdma_cm_id *) noexcept nogil
+
+cdef void *_cm_libhandle = NULL
+cdef fp_cm_getaddrinfo _cm_getaddrinfo = NULL
+cdef fp_cm_freeaddrinfo _cm_freeaddrinfo = NULL
+cdef fp_cm_create_ep _cm_create_ep = NULL
+cdef fp_cm_destroy_ep _cm_destroy_ep = NULL
+cdef fp_cm_create_qp _cm_create_qp = NULL
+cdef fp_cm_destroy_qp _cm_destroy_qp = NULL
+cdef fp_cm_connect _cm_connect = NULL
+cdef fp_cm_disconnect _cm_disconnect = NULL
+
+
 cdef void *_req_sym(void *h, const char *name) except NULL:
     cdef void *sym = dlsym(h, name)
     if sym is NULL:
@@ -174,6 +197,31 @@ cdef int _load_libibverbs() except -1:
     return 0
 
 
+cdef int _load_librdmacm() except -1:
+    global _cm_libhandle, _cm_getaddrinfo, _cm_freeaddrinfo
+    global _cm_create_ep, _cm_destroy_ep, _cm_create_qp, _cm_destroy_qp
+    global _cm_connect, _cm_disconnect
+    if _cm_libhandle is not NULL:
+        return 0
+    cdef void *h = dlopen(b"librdmacm.so.1", RTLD_NOW | RTLD_LOCAL)
+    cdef char *e
+    if h is NULL:
+        e = dlerror()
+        raise RuntimeError(
+            "could not load librdmacm.so.1 - install rdma-core / librdmacm "
+            "(%s)" % ((<bytes>e).decode() if e is not NULL else "not found"))
+    _cm_getaddrinfo = <fp_cm_getaddrinfo>_req_sym(h, b"rdma_getaddrinfo")
+    _cm_freeaddrinfo = <fp_cm_freeaddrinfo>_req_sym(h, b"rdma_freeaddrinfo")
+    _cm_create_ep = <fp_cm_create_ep>_req_sym(h, b"rdma_create_ep")
+    _cm_destroy_ep = <fp_cm_destroy_ep>_req_sym(h, b"rdma_destroy_ep")
+    _cm_create_qp = <fp_cm_create_qp>_req_sym(h, b"rdma_create_qp")
+    _cm_destroy_qp = <fp_cm_destroy_qp>_req_sym(h, b"rdma_destroy_qp")
+    _cm_connect = <fp_cm_connect>_req_sym(h, b"rdma_connect")
+    _cm_disconnect = <fp_cm_disconnect>_req_sym(h, b"rdma_disconnect")
+    _cm_libhandle = h
+    return 0
+
+
 _load_libibverbs()
 
 
@@ -223,6 +271,15 @@ def _linked() -> bool:
 def _has_dmabuf() -> bool:
     """Return True if this libibverbs provides ``ibv_reg_dmabuf_mr`` (rdma-core >= 34)."""
     return _v_reg_dmabuf_mr is not NULL
+
+
+def _has_rdmacm() -> bool:
+    """Return whether librdmacm can be loaded on this host."""
+    try:
+        _load_librdmacm()
+    except RuntimeError:
+        return False
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -606,16 +663,27 @@ cdef class Context:
     cdef c.ibv_context *_ctx
     cdef readonly str name
     cdef unsigned int _children
+    cdef bint _owned
 
     def __cinit__(self):
         self._ctx = NULL
         self._children = 0
+        self._owned = True
 
     @staticmethod
     cdef Context _wrap(c.ibv_context *ctx, str name):
         cdef Context self = Context.__new__(Context)
         self._ctx = ctx
         self.name = name
+        self._owned = True
+        return self
+
+    @staticmethod
+    cdef Context _wrap_borrowed(c.ibv_context *ctx, str name):
+        cdef Context self = Context.__new__(Context)
+        self._ctx = ctx
+        self.name = name
+        self._owned = False
         return self
 
     cdef int _ensure(self) except -1:
@@ -756,6 +824,11 @@ cdef class Context:
 
     def close(self):
         if self._ctx is not NULL:
+            if not self._owned:
+                raise VerbsError(
+                    "ibv_close_device", EBUSY,
+                    "context is owned by an RDMA CM endpoint",
+                )
             if self._children != 0:
                 raise VerbsError(
                     "ibv_close_device", EBUSY,
@@ -767,7 +840,7 @@ cdef class Context:
             self._ctx = NULL
 
     def __dealloc__(self):
-        if self._ctx is not NULL and self._children == 0:
+        if self._owned and self._ctx is not NULL and self._children == 0:
             _v_close_device(self._ctx)
             self._ctx = NULL
 
@@ -1257,6 +1330,8 @@ cdef class QP:
     cdef readonly CQ recv_cq
     cdef readonly object srq
     cdef int _port
+    cdef cm.rdma_cm_id *_cm_id
+    cdef object _cm_owner
 
     cdef int _ensure(self) except -1:
         if self._qp is NULL:
@@ -1272,6 +1347,8 @@ cdef class QP:
         self.recv_cq = rcq
         self.srq = srq
         self._port = 1
+        self._cm_id = NULL
+        self._cm_owner = None
         return self
 
     @property
@@ -1474,14 +1551,23 @@ cdef class QP:
     def close(self):
         cdef int rc
         if self._qp is not NULL:
-            rc = _v_destroy_qp(self._qp)
-            if rc != 0:
-                _fail_rc("ibv_destroy_qp", rc)
+            if self._cm_id is not NULL:
+                _cm_destroy_qp(self._cm_id)
+                self._cm_id = NULL
+                self._cm_owner = None
+            else:
+                rc = _v_destroy_qp(self._qp)
+                if rc != 0:
+                    _fail_rc("ibv_destroy_qp", rc)
             self._qp = NULL
 
     def __dealloc__(self):
         if self._qp is not NULL:
-            _v_destroy_qp(self._qp)
+            if self._cm_id is not NULL:
+                _cm_destroy_qp(self._cm_id)
+                self._cm_id = NULL
+            else:
+                _v_destroy_qp(self._qp)
             self._qp = NULL
 
     def __enter__(self):
@@ -1727,9 +1813,260 @@ cdef class SRQ:
         return False
 
 
+# --------------------------------------------------------------------------- #
+# RDMA connection manager (optional librdmacm)
+# --------------------------------------------------------------------------- #
+cdef class CMID:
+    """A synchronously resolved RDMA-CM endpoint.
+
+    :meth:`resolve` performs address and route resolution. The returned
+    :attr:`context` is borrowed from RDMA-CM and must not be closed directly;
+    allocate the PD and CQs from it, then use :meth:`create_qp` so CM owns the
+    QP state transitions and destruction.
+    """
+
+    cdef cm.rdma_cm_id *_id
+    cdef readonly Context context
+    cdef readonly str host
+    cdef readonly int port
+    cdef readonly object source
+    cdef bint _connected
+
+    def __cinit__(self):
+        self._id = NULL
+        self.context = None
+        self.source = None
+        self._connected = False
+
+    @classmethod
+    def resolve(cls, str host, port=4420, source=None):
+        """Resolve ``host:port``, optionally binding a source IP address."""
+        if not host or "\x00" in host:
+            raise ValueError("host must be a non-empty string without NUL bytes")
+        if source is not None:
+            if not isinstance(source, str) or not source or "\x00" in source:
+                raise ValueError(
+                    "source must be a non-empty string without NUL bytes"
+                )
+        port = int(port)
+        if port <= 0 or port > 65535:
+            raise ValueError("port must be between 1 and 65535")
+        _load_librdmacm()
+        cdef bytes node = host.encode("idna")
+        cdef bytes service = str(port).encode("ascii")
+        cdef const char *node_ptr = node
+        cdef const char *service_ptr = service
+        cdef bytes source_node
+        cdef bytes source_service = b"0"
+        cdef const char *source_node_ptr = NULL
+        cdef const char *source_service_ptr = source_service
+        cdef cm.rdma_addrinfo hints
+        cdef cm.rdma_addrinfo source_hints
+        cdef cm.rdma_addrinfo *result = NULL
+        cdef cm.rdma_addrinfo *source_result = NULL
+        cdef cm.rdma_cm_id *endpoint = NULL
+        cdef int rc
+        memset(&hints, 0, sizeof(hints))
+        hints.ai_qp_type = _QPT_RC
+        hints.ai_port_space = 0x0106  # RDMA_PS_TCP
+        if source is not None:
+            source_node = (<str>source).encode("idna")
+            source_node_ptr = source_node
+            memset(&source_hints, 0, sizeof(source_hints))
+            source_hints.ai_qp_type = _QPT_RC
+            source_hints.ai_port_space = 0x0106
+            with nogil:
+                rc = _cm_getaddrinfo(
+                    source_node_ptr,
+                    source_service_ptr,
+                    &source_hints,
+                    &source_result,
+                )
+            if rc != 0:
+                _fail_rc("rdma_getaddrinfo(source)", rc)
+            hints.ai_family = source_result.ai_family
+            hints.ai_flags = 0x00000008  # RAI_FAMILY
+            hints.ai_src_len = source_result.ai_dst_len
+            hints.ai_src_addr = source_result.ai_dst_addr
+        try:
+            with nogil:
+                rc = _cm_getaddrinfo(node_ptr, service_ptr, &hints, &result)
+            if rc != 0:
+                _fail_rc("rdma_getaddrinfo", rc)
+            try:
+                with nogil:
+                    rc = _cm_create_ep(&endpoint, result, NULL, NULL)
+                if rc != 0:
+                    _fail_rc("rdma_create_ep", rc)
+            finally:
+                _cm_freeaddrinfo(result)
+        finally:
+            if source_result is not NULL:
+                _cm_freeaddrinfo(source_result)
+        if endpoint is NULL or endpoint.verbs is NULL:
+            if endpoint is not NULL:
+                _cm_destroy_ep(endpoint)
+            raise VerbsError("rdma_create_ep", EIO, "resolved endpoint has no device")
+        cdef CMID self = CMID.__new__(CMID)
+        self._id = endpoint
+        self.host = host
+        self.port = port
+        self.source = source
+        self.context = Context._wrap_borrowed(
+            endpoint.verbs, _v_get_device_name(endpoint.verbs.device).decode())
+        return self
+
+    cdef int _ensure(self) except -1:
+        if self._id is NULL:
+            raise VerbsError("rdma_cm_id is closed", EBADF)
+        return 0
+
+    @property
+    def closed(self) -> bool:
+        return self._id is NULL
+
+    @property
+    def connected(self) -> bool:
+        return bool(self._connected)
+
+    def create_qp(self, PD pd, init_attr) -> QP:
+        """Create a CM-managed RC QP using ``pd`` and ``init_attr``."""
+        self._ensure()
+        pd._ensure()
+        if self._id.qp is not NULL:
+            raise VerbsError("rdma_create_qp", EBUSY, "endpoint already has a QP")
+        if pd.context is not self.context:
+            raise ValueError("protection domain must belong to this CM context")
+        cdef CQ scq = <CQ>init_attr.send_cq
+        cdef CQ rcq = <CQ>init_attr.recv_cq
+        cdef SRQ srq = None
+        scq._ensure()
+        rcq._ensure()
+        if scq.context is not self.context or rcq.context is not self.context:
+            raise ValueError("queue-pair CQs must belong to this CM context")
+        cdef c.ibv_qp_init_attr a
+        memset(&a, 0, sizeof(a))
+        a.send_cq = scq._cq
+        a.recv_cq = rcq._cq
+        if init_attr.srq is not None:
+            srq = <SRQ>init_attr.srq
+            srq._ensure()
+            if srq.pd is not pd:
+                raise ValueError("queue-pair SRQ must belong to this PD")
+            a.srq = srq._srq
+        if int(init_attr.qp_type) != _QPT_RC:
+            raise ValueError("RDMA-CM endpoint requires an RC queue pair")
+        a.qp_type = _QPT_RC
+        a.sq_sig_all = 1 if init_attr.sq_sig_all else 0
+        a.cap.max_send_wr = init_attr.max_send_wr
+        a.cap.max_recv_wr = init_attr.max_recv_wr
+        a.cap.max_send_sge = init_attr.max_send_sge
+        a.cap.max_recv_sge = init_attr.max_recv_sge
+        a.cap.max_inline_data = init_attr.max_inline_data
+        cdef int rc = _cm_create_qp(self._id, pd._pd, &a)
+        if rc != 0:
+            _fail_rc("rdma_create_qp", rc)
+        cdef QP qp = QP._wrap(self._id.qp, pd, scq, rcq, srq)
+        qp._cm_id = self._id
+        qp._cm_owner = self
+        return qp
+
+    def connect(self, private_data=b"", *, responder_resources=1,
+                initiator_depth=1, retry_count=7, rnr_retry_count=7) -> bytes:
+        """Connect the QP and return the peer's RDMA-CM private data."""
+        self._ensure()
+        if self._id.qp is NULL:
+            raise VerbsError("rdma_connect", EBADF, "create a QP before connecting")
+        cdef bytes data = bytes(private_data)
+        if len(data) > 255:
+            raise ValueError("RDMA-CM private data cannot exceed 255 bytes")
+        for name, value in (
+            ("responder_resources", responder_resources),
+            ("initiator_depth", initiator_depth),
+            ("retry_count", retry_count),
+            ("rnr_retry_count", rnr_retry_count),
+        ):
+            if int(value) < 0 or int(value) > 255:
+                raise ValueError("%s must be between 0 and 255" % name)
+        cdef cm.rdma_conn_param param
+        memset(&param, 0, sizeof(param))
+        if data:
+            param.private_data = <const void *><const char *>data
+            param.private_data_len = <uint8_t>len(data)
+        param.responder_resources = <uint8_t>responder_resources
+        param.initiator_depth = <uint8_t>initiator_depth
+        param.flow_control = 1
+        param.retry_count = <uint8_t>retry_count
+        param.rnr_retry_count = <uint8_t>rnr_retry_count
+        cdef int rc
+        with nogil:
+            rc = _cm_connect(self._id, &param)
+        if rc != 0:
+            _fail_rc("rdma_connect", rc)
+        self._connected = True
+        cdef cm.rdma_cm_event *event = self._id.event
+        cdef uint8_t n
+        if event is NULL or event.param.conn.private_data is NULL:
+            return b""
+        n = event.param.conn.private_data_len
+        return (<char *>event.param.conn.private_data)[:n]
+
+    def disconnect(self):
+        """Synchronously disconnect an established endpoint."""
+        self._ensure()
+        if not self._connected:
+            return
+        cdef int rc
+        with nogil:
+            rc = _cm_disconnect(self._id)
+        if rc != 0:
+            _fail_rc("rdma_disconnect", rc)
+        self._connected = False
+
+    def close(self):
+        if self._id is not NULL:
+            if self._id.qp is not NULL:
+                raise VerbsError(
+                    "rdma_destroy_ep", EBUSY, "close the CM-managed QP first")
+            if self.context is not None and self.context._children != 0:
+                raise VerbsError(
+                    "rdma_destroy_ep", EBUSY,
+                    "cannot close endpoint with %d open context resource(s)"
+                    % self.context._children,
+                )
+            if self.context is not None:
+                self.context._ctx = NULL
+            _cm_destroy_ep(self._id)
+            self._id = NULL
+            self._connected = False
+
+    def __dealloc__(self):
+        if self._id is not NULL:
+            if self._id.qp is not NULL:
+                _cm_destroy_qp(self._id)
+            if self.context is not None:
+                self.context._ctx = NULL
+            _cm_destroy_ep(self._id)
+            self._id = NULL
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def __repr__(self):
+        if self._id is NULL:
+            return "CMID(closed=True)"
+        return "CMID(host=%r, port=%d, connected=%r)" % (
+            self.host, self.port, bool(self._connected))
+
+
 __all__ = [
     "VerbsError", "CompletionError", "Gid", "DeviceAttr", "PortAttr", "WC",
     "SGE", "SendWR",
     "RecvWR", "QPCap", "QPInitAttr", "AHAttr", "Device", "get_device_list",
     "Context", "AsyncEvent", "PD", "MR", "CompChannel", "CQ", "QP", "AH", "SRQ",
+    "CMID",
 ]

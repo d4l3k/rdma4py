@@ -1,7 +1,7 @@
 # rdma4py
 
 Low-level Python bindings for high-performance RDMA and direct GPU networking.
-The repository contains two independently installable packages.
+The repository contains three independently installable packages.
 
 ## EFA
 
@@ -23,9 +23,18 @@ queues, atomics, and GPUDirect registration.
 pip install ibverbs
 ```
 
-Both packages use Cython for inline provider dispatch, release the GIL on data
-path operations, load RDMA libraries at runtime, and publish one Linux `abi3`
-wheel for CPython 3.9 and newer.
+The EFA and ibverbs packages use Cython for inline provider dispatch, release
+the GIL on data path operations, load RDMA libraries at runtime, and publish
+one Linux `abi3` wheel for CPython 3.9 and newer.
+
+## NVMe over Fabrics
+
+[`nvmeof`](nvmeof/index) provides a userspace NVMe/RDMA initiator on top of
+`ibverbs`, including direct data placement into registered CUDA GPU memory.
+
+```bash
+pip install nvmeof
+```
 
 ```{toctree}
 :maxdepth: 2
@@ -35,4 +44,6 @@ efa/index
 efa/api
 ibverbs/index
 ibverbs/api
+nvmeof/index
+nvmeof/api
 ```

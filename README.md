@@ -2,11 +2,23 @@
 
 [![efa on PyPI](https://img.shields.io/pypi/v/efa?label=efa)](https://pypi.org/project/efa/)
 [![ibverbs on PyPI](https://img.shields.io/pypi/v/ibverbs?label=ibverbs)](https://pypi.org/project/ibverbs/)
+[![nvmeof on PyPI](https://img.shields.io/pypi/v/nvmeof?label=nvmeof)](https://pypi.org/project/nvmeof/)
 
 High-performance RDMA for Python.
 
-Documentation for both packages is published at
+Documentation for all packages is published at
 [d4l3k.github.io/rdma4py](https://d4l3k.github.io/rdma4py/).
+
+## Benchmarks
+
+See the [benchmark overview](BENCHMARKS.md) and the detailed backend reports:
+[EFA multi-lane](efa/BENCHMARKS.md),
+[ibverbs multi-QP](ibverbs/BENCHMARKS.md), and
+[NVMe-oF/RDMA to GPU](nvmeof/BENCHMARKS.md).
+
+![Measured bandwidth by message size](benchmarks/bandwidth.svg)
+
+![Measured latency by message size](benchmarks/latency.svg)
 
 ## [`efa/`](efa/) - AWS EFA and SRD bindings
 
@@ -38,6 +50,19 @@ python -m pip install ibverbs
 
 See [`ibverbs/README.md`](ibverbs/README.md) for system setup, the API,
 quickstart, feature coverage, source installation, and testing instructions.
+
+## [`nvmeof/`](nvmeof/) - NVMe over Fabrics RDMA initiator
+
+Userspace NVMe/RDMA controller and namespace access layered on `ibverbs`, with
+keyed SGL data placement directly into registered host or CUDA GPU memory. It
+is shipped separately because NVMe protocol policy is above the verbs layer.
+
+```bash
+python -m pip install nvmeof
+```
+
+See [`nvmeof/README.md`](nvmeof/README.md) for target requirements, host and
+GPU examples, ordering rules, and current protocol scope.
 
 ## License
 

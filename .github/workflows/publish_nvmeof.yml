@@ -1,0 +1,110 @@
+name: build & publish nvmeof
+
+on:
+  push:
+    branches: [main]
+    tags: ["nvmeof-v*"]
+    paths:
+      - "nvmeof/**"
+      - ".github/workflows/publish_nvmeof.yml"
+  pull_request:
+    paths:
+      - "nvmeof/**"
+      - ".github/workflows/publish_nvmeof.yml"
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: nvmeof
+
+jobs:
+  resolve_version:
+    name: resolve package version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Select release version
+        id: version
+        working-directory: .
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            version=$(date -u +'%Y.%-m.%-d')
+          elif [[ "$GITHUB_REF" == refs/tags/nvmeof-v* ]]; then
+            version=${GITHUB_REF_NAME#nvmeof-v}
+          else
+            version=0.1.0
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: pure Python wheel and sdist
+    needs: resolve_version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Stamp package version
+        env:
+          PACKAGE_VERSION: ${{ needs.resolve_version.outputs.version }}
+        run: printf '__version__ = "%s"\n' "$PACKAGE_VERSION" > src/nvmeof/_version.py
+      - name: Build distributions
+        run: python -m pip install build && python -m build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nvmeof-dist
+          path: nvmeof/dist/*
+
+  verify:
+    name: Python ${{ matrix.python-version }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: nvmeof-dist
+          path: dist
+      - name: Install runtime and local ibverbs
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libibverbs-dev librdmacm-dev
+          python -m pip install ./ibverbs "$GITHUB_WORKSPACE"/dist/nvmeof-*.whl
+          python -c "import nvmeof; assert nvmeof.NVME_RDMA_PORT == 4420"
+
+  publish:
+    name: publish to PyPI
+    needs: verify
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'schedule') ||
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/nvmeof-v'))
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: nvmeof-dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          skip-existing: true

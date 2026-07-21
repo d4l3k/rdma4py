@@ -30,12 +30,12 @@ jobs:
       - name: Install RDMA headers and runtime
         run: >-
           sudo apt-get update &&
-          sudo apt-get install -y libefa1 libibverbs-dev ibverbs-providers
+          sudo apt-get install -y libefa1 libibverbs-dev librdmacm-dev ibverbs-providers
       - name: Build packages and install documentation dependencies
         run: |
           uv venv .venv
           uv pip install --python .venv/bin/python -r docs/requirements.txt
-          uv pip install --python .venv/bin/python -e ./efa -e ./ibverbs
+          uv pip install --python .venv/bin/python -e ./efa -e ./ibverbs -e ./nvmeof
       - name: Build documentation
         run: .venv/bin/sphinx-build -W --keep-going -b html docs docs/_build/html
       - uses: actions/upload-pages-artifact@v4

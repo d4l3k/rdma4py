@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nvmeof"
+dynamic = ["version"]
+description = "NVMe over Fabrics RDMA initiator with direct GPU memory support"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "Tristan Rice" }]
+keywords = ["nvme", "nvmeof", "rdma", "ibverbs", "gpudirect", "gpu"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Hardware",
+]
+dependencies = ["ibverbs>=0.1.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "numpy"]
+gpu = ["torch"]
+
+[tool.setuptools.dynamic]
+version = { attr = "nvmeof._version.__version__" }
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: exercises a real NVMe/RDMA target",
+    "gpu: requires CUDA and GPUDirect RDMA",
+]
+testpaths = ["tests"]
+
+[project.urls]
+Documentation = "https://d4l3k.github.io/rdma4py/nvmeof/"
+Homepage = "https://github.com/d4l3k/rdma4py"
+Repository = "https://github.com/d4l3k/rdma4py"

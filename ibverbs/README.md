@@ -32,11 +32,14 @@ result:
 - Newer verbs are optional: `ibv_reg_dmabuf_mr` (rdma-core ≥ 34) is loaded if
   present and only errors if you actually call `reg_dmabuf_mr`, so the wheel
   still imports on older systems.
+- RDMA-CM is optional and lazily loads `librdmacm.so.1` only when `CMID` is
+  used. `CMID.resolve()` returns the CM-owned device context and creates QPs
+  whose state transitions and destruction remain owned by librdmacm.
 
-At runtime you only need `libibverbs.so.1` (any `rdma-core` from the last
-several years). The data path (`post_send`/`poll`/…) stays compiled inline and
-dispatches through the provider op table, so `dlopen` costs nothing on the hot
-path.
+Base verbs use only `libibverbs.so.1` at runtime (any `rdma-core` from the last
+several years); `CMID` additionally needs `librdmacm.so.1`. The data path
+(`post_send`/`poll`/…) stays compiled inline and dispatches through the
+provider op table, so `dlopen` costs nothing on the hot path.
 
 ## Requirements
 
@@ -44,7 +47,8 @@ path.
 - **Runtime:** `libibverbs.so.1` (`rdma-core` — `libibverbs1` on Debian/Ubuntu,
   `libibverbs` on RHEL/Fedora). No compiler or headers needed to *use* a wheel.
 - **Build from source only:** a C compiler, Cython, and the `rdma-core`
-  development headers (`libibverbs-dev` / `rdma-core-devel`).
+  development headers (`libibverbs-dev` plus `librdmacm-dev` on Debian/Ubuntu,
+  or `rdma-core-devel` on RPM-based distributions).
 
 ## Install
 
@@ -179,6 +183,7 @@ GPU-to-GPU RDMA writes, reads, and sends verified with `torch.equal`.
 | Address handles | ✅ `create_ah` (UD) |
 | Async events | ✅ `get_async_event` / `ack_async_event`, `async_fd` |
 | Connection helpers | ✅ `QPInfo`, `local_qp_info`, `connect_rc` |
+| RDMA connection manager | ✅ `CMID.resolve/create_qp/connect/disconnect` |
 
 Out of scope for v1 (candidates for later): the extended `ibv_wr_*` / `qp_ex`
 post API, device memory (`ibv_alloc_dm`), memory windows, and flow steering.

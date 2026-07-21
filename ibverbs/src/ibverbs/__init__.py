@@ -22,6 +22,7 @@ from ._ibverbs import (  # pyre-ignore[21]: Implemented by the Cython extension.
     AH,
     AHAttr,
     AsyncEvent,
+    CMID,
     CompChannel,
     CompletionError,
     Context,
@@ -84,6 +85,7 @@ __all__ = [
     "SGE",
     "VerbsError",
     "CompletionError",
+    "CMID",
     "WC",
     "get_device_list",
     # enums

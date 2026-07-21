@@ -80,7 +80,9 @@ jobs:
           '${{ needs.resolve_version.outputs.version }}'
           > src/ibverbs/_version.py
       - name: Install rdma-core headers
-        run: sudo apt-get update && sudo apt-get install -y libibverbs-dev
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y libibverbs-dev librdmacm-dev
       - name: Build sdist
         run: pipx run build --sdist
       - uses: actions/upload-artifact@v7

@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [efa, ibverbs]
+        package: [efa, ibverbs, nvmeof]
         python-version: ["3.9", "3.13"]
     defaults:
       run:
@@ -34,9 +34,15 @@ jobs:
         working-directory: .
         run: >-
           sudo apt-get update &&
-          sudo apt-get install -y libefa1 libibverbs-dev ibverbs-providers
+          sudo apt-get install -y libefa1 libibverbs-dev librdmacm-dev ibverbs-providers
       - name: Install package and test dependencies
-        run: uv pip install --system -e ".[test]"
+        shell: bash
+        run: |
+          if [[ "${{ matrix.package }}" == "nvmeof" ]]; then
+            uv pip install --system -e ../ibverbs -e ".[test]"
+          else
+            uv pip install --system -e ".[test]"
+          fi
       - name: Run tests
         env:
           RDMA4PY_SKIP_HARDWARE_TESTS: "1"
