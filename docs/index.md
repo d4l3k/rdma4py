@@ -27,7 +27,7 @@ The EFA and ibverbs packages use Cython for inline provider dispatch, release
 the GIL on data path operations, load RDMA libraries at runtime, and publish
 one Linux `abi3` wheel for CPython 3.9 and newer.
 
-## NVMe over Fabrics
+## NVMe/RDMA
 
 [`nvmeof`](nvmeof/index) provides a userspace NVMe/RDMA initiator on top of
 `ibverbs`, including direct data placement into registered CUDA GPU memory.
@@ -41,9 +41,6 @@ pip install nvmeof
 :hidden:
 
 efa/index
-efa/api
 ibverbs/index
-ibverbs/api
 nvmeof/index
-nvmeof/api
 ```

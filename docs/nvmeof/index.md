@@ -1,4 +1,4 @@
-# NVMe over Fabrics RDMA
+# NVMe/RDMA
 
 `nvmeof` is a userspace NVMe/RDMA initiator layered on `ibverbs`. NVMe keyed
 SGL descriptors address the caller's registered MR directly, so the same API
@@ -68,3 +68,12 @@ the required CUDA ordering around GPU I/O.
 See the [package README](https://github.com/d4l3k/rdma4py/tree/main/nvmeof)
 for installation, target requirements, full examples, and current scope. The
 [API reference](api) covers the controller, transport, and wire-layout helpers.
+
+## Documentation
+
+```{toctree}
+:maxdepth: 1
+
+examples
+api
+```

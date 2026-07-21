@@ -34,10 +34,14 @@ exclude_patterns = ["_build"]
 html_theme = "pytorch_sphinx_theme2"
 html_title = "rdma4py"
 html_baseurl = "https://d4l3k.github.io/rdma4py/"
+html_static_path = ["_static"]
+html_css_files = ["custom.css"]
 html_theme_options = {
     "article_footer_items": [],
     "article_header_end": [],
     "collapse_navigation": False,
+    "enable_navbar_dropdowns": True,
+    "header_links_before_dropdown": 3,
     "icon_links": [
         {
             "name": "GitHub",
@@ -48,6 +52,7 @@ html_theme_options = {
     "logo": {"text": "rdma4py"},
     "navbar_end": ["search-field", "theme-switcher", "navbar-icon-links"],
     "secondary_sidebar_items": ["page-toc", "edit-this-page"],
+    "show_pytorch_org_link": False,
     "show_prev_next": True,
     "use_edit_page_button": True,
 }

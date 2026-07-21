@@ -69,3 +69,12 @@ For unsolicited RDMA write-with-immediate notifications, enable
 `unsolicited_write_recv` on every communicating QP and `unsolicited` on the
 extended receive CQ. EFA rejects peers that negotiate different QP feature
 sets.
+
+## Documentation
+
+```{toctree}
+:maxdepth: 1
+
+examples
+api
+```

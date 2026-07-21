@@ -43,3 +43,12 @@ memory as dma-buf when available and falls back to `nvidia_peermem`.
 
 The full transport, API coverage, and GPUDirect guide is maintained in the
 [ibverbs package README](https://github.com/d4l3k/rdma4py/tree/main/ibverbs).
+
+## Documentation
+
+```{toctree}
+:maxdepth: 1
+
+examples
+api
+```

@@ -1,0 +1,80 @@
+/* Keep the documentation header compact when the optional LF header is off. */
+.bd-header {
+  top: 0 !important;
+  min-height: 4rem;
+  padding-left: clamp(1rem, 3vw, 2.5rem);
+  padding-right: clamp(1rem, 3vw, 2.5rem);
+}
+
+.bd-header__inner {
+  min-height: 4rem;
+  gap: 1rem;
+}
+
+.navbar-header-items__start .navbar-brand {
+  align-items: center;
+  display: flex;
+  min-width: 7rem;
+  padding: 0;
+}
+
+.navbar-brand .logo__title {
+  color: var(--pst-color-text-base);
+  font-size: 1.2rem;
+  font-weight: 600;
+  line-height: 1;
+  margin: 0;
+}
+
+.bd-header .navbar-header-items__center .navbar-item .nav-link,
+.bd-header .navbar-header-items__center .nav-item .more-toggle {
+  font-size: 0.88rem !important;
+  letter-spacing: 0 !important;
+  padding: 0.6rem 0.65rem !important;
+}
+
+.bd-header .search-button__search-container,
+.bd-header .bd-search {
+  max-width: 17rem;
+}
+
+@media (max-width: 959px) {
+  .bd-header {
+    min-height: 3.5rem;
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+
+  .bd-header__inner {
+    min-height: 3.5rem;
+    position: relative;
+  }
+
+  .navbar-header-items__start {
+    display: flex !important;
+    left: 50%;
+    position: absolute;
+    transform: translateX(-50%);
+  }
+
+  .navbar-header-items__start .navbar-brand {
+    display: flex !important;
+    min-width: auto;
+  }
+
+  .navbar-brand .logo__title {
+    font-size: 1.05rem;
+  }
+
+  .bd-header button.secondary-toggle {
+    margin-left: auto !important;
+  }
+
+  article h1,
+  article .h1 {
+    font-size: 2.15rem;
+    line-height: 1.2;
+    overflow-wrap: anywhere !important;
+    word-break: normal !important;
+  }
+}
