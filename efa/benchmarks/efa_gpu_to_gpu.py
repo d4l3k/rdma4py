@@ -44,10 +44,31 @@ class Endpoint:
         return efa.local_endpoint_info(self.qp, qkey=QKEY)
 
 
+@dataclass
+class EfaLane:
+    source_location: DeviceLocation
+    destination_location: DeviceLocation
+    source_endpoints: Sequence[Endpoint]
+    destination_endpoints: Sequence[Endpoint]
+    source_cq: object
+    destination_cq: object
+    source_mr: object
+    destination_mr: object
+    source_peers: Sequence[efa.Peer]
+    destination_peers: Sequence[efa.Peer]
+    owned_resources: Optional[Sequence[object]] = None
+
+    def close(self) -> None:
+        if self.owned_resources is not None:
+            for resource in self.owned_resources:
+                resource.close()
+
+
 @dataclass(frozen=True)
 class EfaResult:
     operation: str
     size: int
+    lane_count: int
     qp_count: int
     queue_depth: int
     operations: int
@@ -192,6 +213,32 @@ def select_efa_devices(
     )
 
 
+def select_efa_lanes(
+    devices: Sequence[object],
+    source_gpu: DeviceLocation,
+    destination_gpu: DeviceLocation,
+    count: int,
+    first_source_name: Optional[str],
+    first_destination_name: Optional[str],
+) -> list[tuple[object, object, DeviceLocation, DeviceLocation]]:
+    remaining = list(devices)
+    lanes = []
+    for lane_index in range(count):
+        lane = select_efa_devices(
+            remaining,
+            source_gpu,
+            destination_gpu,
+            first_source_name if lane_index == 0 else None,
+            first_destination_name if lane_index == 0 else None,
+        )
+        lanes.append(lane)
+        selected_names = {lane[0].name, lane[1].name}
+        remaining = [
+            device for device in remaining if device.name not in selected_names
+        ]
+    return lanes
+
+
 def nvlink_relation(source_gpu: int, destination_gpu: int) -> str:
     try:
         output = subprocess.check_output(
@@ -250,6 +297,71 @@ def create_qps(pd, cq, count: int, queue_depth: int) -> list[Endpoint]:
     return endpoints
 
 
+def create_efa_lane(
+    source_device,
+    destination_device,
+    source_location: DeviceLocation,
+    destination_location: DeviceLocation,
+    qp_count: int,
+    queue_depth: int,
+    max_cqe: int,
+    source_tensor: torch.Tensor,
+    destination_tensor: torch.Tensor,
+) -> EfaLane:
+    source_ctx = source_device.open()
+    destination_ctx = destination_device.open()
+    source_pd = source_ctx.alloc_pd()
+    destination_pd = destination_ctx.alloc_pd()
+    source_cq = source_ctx.create_cq(max_cqe)
+    destination_cq = destination_ctx.create_cq(max_cqe)
+    source_endpoints = create_qps(source_pd, source_cq, qp_count, queue_depth)
+    destination_endpoints = create_qps(
+        destination_pd,
+        destination_cq,
+        qp_count,
+        queue_depth,
+    )
+    source_peers = [
+        efa.EndpointInfo.from_bytes(endpoint.info().to_bytes()).peer(source_pd)
+        for endpoint in destination_endpoints
+    ]
+    destination_peers = [
+        efa.EndpointInfo.from_bytes(endpoint.info().to_bytes()).peer(destination_pd)
+        for endpoint in source_endpoints
+    ]
+    source_mr = efa_cuda.register_tensor(source_pd, source_tensor, FULL_ACCESS)
+    destination_mr = efa_cuda.register_tensor(
+        destination_pd, destination_tensor, FULL_ACCESS
+    )
+    owned_resources = [
+        source_mr,
+        destination_mr,
+        *source_peers,
+        *destination_peers,
+        *(endpoint.qp for endpoint in source_endpoints),
+        *(endpoint.qp for endpoint in destination_endpoints),
+        source_cq,
+        destination_cq,
+        source_pd,
+        destination_pd,
+        source_ctx,
+        destination_ctx,
+    ]
+    return EfaLane(
+        source_location=source_location,
+        destination_location=destination_location,
+        source_endpoints=source_endpoints,
+        destination_endpoints=destination_endpoints,
+        source_cq=source_cq,
+        destination_cq=destination_cq,
+        source_mr=source_mr,
+        destination_mr=destination_mr,
+        source_peers=source_peers,
+        destination_peers=destination_peers,
+        owned_resources=owned_resources,
+    )
+
+
 def poll_completions(cq, count: int, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     completed = 0
@@ -271,15 +383,17 @@ def make_wrs(
     local_mr,
     remote_mr,
     peers: Sequence[efa.Peer],
+    base_region: int = 0,
 ) -> list[list[efa.SendWR]]:
     opcode = efa.WROpcode.RDMA_WRITE if operation == "write" else efa.WROpcode.RDMA_READ
     result = []
     for qp_index in range(qp_count):
-        offset = qp_index * region_size
+        region_index = base_region + qp_index
+        offset = region_index * region_size
         result.append(
             [
                 efa.SendWR(
-                    wr_id=(qp_index << 32) | wr_index,
+                    wr_id=(region_index << 32) | wr_index,
                     sg_list=[local_mr.sge(size, offset=offset)],
                     opcode=opcode,
                     send_flags=efa.SendFlags.SIGNALED,
@@ -356,7 +470,79 @@ def run_efa(
     return EfaResult(
         operation=operation,
         size=size,
+        lane_count=1,
         qp_count=qp_count,
+        queue_depth=queue_depth,
+        operations=operations,
+        seconds=elapsed,
+    )
+
+
+def run_efa_lanes(
+    operation: str,
+    size: int,
+    lane_count: int,
+    qps_per_lane: int,
+    queue_depth: int,
+    duration: float,
+    warmup_batches: int,
+    timeout: float,
+    lanes: Sequence[EfaLane],
+    region_size: int,
+) -> EfaResult:
+    work = []
+    for lane_index, lane in enumerate(lanes[:lane_count]):
+        if operation == "write":
+            endpoints = lane.source_endpoints
+            cq = lane.source_cq
+            local_mr = lane.source_mr
+            remote_mr = lane.destination_mr
+            peers = lane.source_peers
+        else:
+            endpoints = lane.destination_endpoints
+            cq = lane.destination_cq
+            local_mr = lane.destination_mr
+            remote_mr = lane.source_mr
+            peers = lane.destination_peers
+        wrs = make_wrs(
+            operation,
+            size,
+            queue_depth,
+            qps_per_lane,
+            region_size,
+            local_mr,
+            remote_mr,
+            peers,
+            base_region=lane_index * qps_per_lane,
+        )
+        work.append((endpoints, cq, wrs))
+
+    completions_per_lane = qps_per_lane * queue_depth
+
+    def run_batch() -> None:
+        for endpoints, _, wrs in work:
+            for endpoint, qp_wrs in zip(endpoints, wrs):
+                endpoint.qp.post_send(qp_wrs)
+        for _, cq, _ in work:
+            poll_completions(cq, completions_per_lane, timeout)
+
+    for _ in range(warmup_batches):
+        run_batch()
+
+    operations = 0
+    start = time.perf_counter()
+    deadline = start + duration
+    while True:
+        run_batch()
+        operations += lane_count * completions_per_lane
+        if time.perf_counter() >= deadline:
+            break
+    elapsed = time.perf_counter() - start
+    return EfaResult(
+        operation=operation,
+        size=size,
+        lane_count=lane_count,
+        qp_count=lane_count * qps_per_lane,
         queue_depth=queue_depth,
         operations=operations,
         seconds=elapsed,
@@ -439,6 +625,27 @@ def print_environment(
     print()
 
 
+def print_lane_topology(
+    lanes: Sequence[tuple[object, object, DeviceLocation, DeviceLocation]],
+    source_gpu: DeviceLocation,
+    destination_gpu: DeviceLocation,
+) -> None:
+    print("# EFA lane topology")
+    print()
+    print(
+        "| Lane | Source EFA | PCI | Distance | " "Destination EFA | PCI | Distance |"
+    )
+    print("|---:|---|---|---:|---|---|---:|")
+    for index, (_, _, source, destination) in enumerate(lanes):
+        print(
+            f"| {index} | {source.name} | `{source.pci}` | "
+            f"{pci_distance(source_gpu, source)} | {destination.name} | "
+            f"`{destination.pci}` | "
+            f"{pci_distance(destination_gpu, destination)} |"
+        )
+    print()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-gpu", type=int, default=0)
@@ -467,6 +674,8 @@ def parse_args() -> argparse.Namespace:
         "--operations", nargs="+", choices=("write", "read"), default=("write", "read")
     )
     parser.add_argument("--qp-counts", nargs="+", type=int, default=(1, 2, 4, 8))
+    parser.add_argument("--lane-counts", nargs="+", type=int, default=(1, 2, 4))
+    parser.add_argument("--qps-per-lane", type=int, default=4)
     parser.add_argument("--queue-depth", type=int, default=16)
     parser.add_argument("--latency-seconds", type=float, default=0.75)
     parser.add_argument("--bandwidth-seconds", type=float, default=1.5)
@@ -487,6 +696,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("tensor sizes must be positive")
     if min(args.qp_counts) <= 0:
         raise ValueError("QP counts must be positive")
+    if min(args.lane_counts) <= 0:
+        raise ValueError("lane counts must be positive")
+    if args.qps_per_lane <= 0:
+        raise ValueError("QPs per lane must be positive")
     if args.queue_depth <= 0:
         raise ValueError("queue depth must be positive")
     if args.warmup_batches < 0:
@@ -514,18 +727,21 @@ def main() -> None:
 
     source_gpu_location = gpu_location(args.source_gpu)
     destination_gpu_location = gpu_location(args.destination_gpu)
+    max_lane_count = max(args.lane_counts)
+    lane_selections = select_efa_lanes(
+        devices,
+        source_gpu_location,
+        destination_gpu_location,
+        max_lane_count,
+        args.source_device,
+        args.destination_device,
+    )
     (
         source_device,
         destination_device,
         source_efa_location,
         destination_efa_location,
-    ) = select_efa_devices(
-        devices,
-        source_gpu_location,
-        destination_gpu_location,
-        args.source_device,
-        args.destination_device,
-    )
+    ) = lane_selections[0]
     print_environment(
         args.source_gpu,
         args.destination_gpu,
@@ -534,11 +750,18 @@ def main() -> None:
         source_efa_location,
         destination_efa_location,
     )
+    print_lane_topology(
+        lane_selections,
+        source_gpu_location,
+        destination_gpu_location,
+    )
 
     max_qp_count = max(args.qp_counts)
+    max_qps_per_device = max(max_qp_count, args.qps_per_lane)
     max_size = max(args.sizes)
-    allocation_size = max_qp_count * max_size
-    max_cqe = max(1024, max_qp_count * args.queue_depth * 4)
+    region_count = max(max_qp_count, max_lane_count * args.qps_per_lane)
+    allocation_size = region_count * max_size
+    max_cqe = max(1024, max_qps_per_device * args.queue_depth * 4)
 
     source_ctx = source_device.open()
     destination_ctx = destination_device.open()
@@ -546,11 +769,16 @@ def main() -> None:
     destination_pd = destination_ctx.alloc_pd()
     source_cq = source_ctx.create_cq(max_cqe)
     destination_cq = destination_ctx.create_cq(max_cqe)
-    source_endpoints = create_qps(source_pd, source_cq, max_qp_count, args.queue_depth)
+    source_endpoints = create_qps(
+        source_pd,
+        source_cq,
+        max_qps_per_device,
+        args.queue_depth,
+    )
     destination_endpoints = create_qps(
         destination_pd,
         destination_cq,
-        max_qp_count,
+        max_qps_per_device,
         args.queue_depth,
     )
     source_peers = [
@@ -579,8 +807,42 @@ def main() -> None:
     destination_mr = efa_cuda.register_tensor(
         destination_pd, destination_tensor, FULL_ACCESS
     )
+    lanes = [
+        EfaLane(
+            source_location=source_efa_location,
+            destination_location=destination_efa_location,
+            source_endpoints=source_endpoints,
+            destination_endpoints=destination_endpoints,
+            source_cq=source_cq,
+            destination_cq=destination_cq,
+            source_mr=source_mr,
+            destination_mr=destination_mr,
+            source_peers=source_peers,
+            destination_peers=destination_peers,
+        )
+    ]
 
     try:
+        for (
+            lane_source_device,
+            lane_destination_device,
+            lane_source_location,
+            lane_destination_location,
+        ) in lane_selections[1:]:
+            lanes.append(
+                create_efa_lane(
+                    lane_source_device,
+                    lane_destination_device,
+                    lane_source_location,
+                    lane_destination_location,
+                    args.qps_per_lane,
+                    args.queue_depth,
+                    max_cqe,
+                    source_tensor,
+                    destination_tensor,
+                )
+            )
+
         latency_results = []
         bandwidth_results = []
         for operation in args.operations:
@@ -632,8 +894,39 @@ def main() -> None:
             with torch.cuda.device(args.destination_gpu):
                 efa_cuda.flush_gpudirect_writes()
             torch.cuda.synchronize(args.destination_gpu)
-            if not bool(torch.all(destination_tensor == 0xA5).item()):
+            one_lane_length = max_qp_count * max_size
+            if not bool(torch.all(destination_tensor[:one_lane_length] == 0xA5).item()):
                 raise RuntimeError(f"{operation} correctness check failed")
+
+        multi_lane_results = []
+        for operation in args.operations:
+            destination_tensor.zero_()
+            torch.cuda.synchronize(args.destination_gpu)
+            for size in args.sizes:
+                for lane_count in args.lane_counts:
+                    multi_lane_results.append(
+                        run_efa_lanes(
+                            operation,
+                            size,
+                            lane_count,
+                            args.qps_per_lane,
+                            args.queue_depth,
+                            args.bandwidth_seconds,
+                            args.warmup_batches,
+                            args.completion_timeout,
+                            lanes,
+                            max_size,
+                        )
+                    )
+
+            with torch.cuda.device(args.destination_gpu):
+                efa_cuda.flush_gpudirect_writes()
+            torch.cuda.synchronize(args.destination_gpu)
+            multi_lane_length = max_lane_count * args.qps_per_lane * max_size
+            if not bool(
+                torch.all(destination_tensor[:multi_lane_length] == 0xA5).item()
+            ):
+                raise RuntimeError(f"multi-lane {operation} correctness check failed")
 
         print("# EFA completion latency")
         print()
@@ -664,6 +957,25 @@ def main() -> None:
             )
         print()
 
+        print("# EFA multi-lane aggregate bandwidth")
+        print()
+        print(
+            "| Operation | Tensor size | Lanes | QPs/lane | QD/QP | "
+            "Outstanding | GB/s | Gbit/s | Samples |"
+        )
+        print("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+        for result in multi_lane_results:
+            print(
+                f"| {result.operation} | {format_size(result.size)} | "
+                f"{result.lane_count} | "
+                f"{result.qp_count // result.lane_count} | "
+                f"{result.queue_depth} | "
+                f"{result.qp_count * result.queue_depth} | "
+                f"{result.gb_per_second:.3f} | "
+                f"{result.gb_per_second * 8:.2f} | {result.operations} |"
+            )
+        print()
+
         if not args.skip_torch_baseline:
             torch_results = [
                 run_torch_copy(
@@ -684,6 +996,8 @@ def main() -> None:
                     f"{result.gb_per_second:.3f} | {result.iterations} |"
                 )
     finally:
+        for lane in reversed(lanes[1:]):
+            lane.close()
         source_mr.close()
         destination_mr.close()
         for peer in source_peers:
