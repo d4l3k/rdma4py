@@ -2,14 +2,16 @@
 
 Measured on 2026-07-21 with the `nvmeof` userspace initiator, the Linux
 `nvmet_rdma` target, and CUDA tensors registered through the `ibverbs`
-dma-buf path. Every result uses two different physical HCAs:
+dma-buf path. Every result uses two different physical HCAs. Reads follow:
 
 ```text
 NVMe file -> target HCA -> RDMA fabric -> initiator HCA -> GPU
 ```
 
-The payload is placed directly in GPU memory on the initiator. There is no
-initiator-side host staging buffer.
+Writes follow the reverse GPU -> initiator HCA -> fabric -> target HCA -> NVMe
+path. Read payloads are placed directly in GPU memory on the initiator, and
+writes are sourced directly from it. There is no initiator-side host staging
+buffer in either direction.
 
 ## Safety and target
 
@@ -82,8 +84,9 @@ mlx5_6 lqpn  863 rqpn 1879 type RC state RTS pid  python
 
 ## `mlx5_0` target to `mlx5_6` initiator
 
-Path: RAID -> `mlx5_0` -> fabric -> `mlx5_6` -> GPU 4. The process is pinned
-to CPU 56 on NUMA node 1 with the initiator HCA and GPU.
+Read path: RAID -> `mlx5_0` -> fabric -> `mlx5_6` -> GPU 4. Writes traverse
+the reverse path. The process is pinned to CPU 56 on NUMA node 1 with the
+initiator HCA and GPU.
 
 | I/O size | Write p50 (us) | Write p99 (us) | Write GB/s | Read p50 (us) | Read p99 (us) | Read GB/s |
 |---:|---:|---:|---:|---:|---:|---:|
@@ -95,8 +98,9 @@ to CPU 56 on NUMA node 1 with the initiator HCA and GPU.
 
 ## `mlx5_6` target to `mlx5_0` initiator
 
-Path: RAID -> `mlx5_6` -> fabric -> `mlx5_0` -> GPU 0. The process is pinned
-to CPU 0 on NUMA node 0 with the initiator HCA and GPU.
+Read path: RAID -> `mlx5_6` -> fabric -> `mlx5_0` -> GPU 0. Writes traverse
+the reverse path. The process is pinned to CPU 0 on NUMA node 0 with the
+initiator HCA and GPU.
 
 | I/O size | Write p50 (us) | Write p99 (us) | Write GB/s | Read p50 (us) | Read p99 (us) | Read GB/s |
 |---:|---:|---:|---:|---:|---:|---:|
