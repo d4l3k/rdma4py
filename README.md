@@ -29,7 +29,7 @@ registration. No Python runtime dependencies and no torch/CUDA linkage.
 Install the [EFA package from PyPI](https://pypi.org/project/efa/):
 
 ```bash
-python -m pip install efa
+pip install efa
 ```
 
 See [`efa/README.md`](efa/README.md) for system setup, API examples, EFA peer
@@ -45,7 +45,7 @@ No runtime dependencies, no torch/CUDA linkage.
 Install the [ibverbs package from PyPI](https://pypi.org/project/ibverbs/):
 
 ```bash
-python -m pip install ibverbs
+pip install ibverbs
 ```
 
 See [`ibverbs/README.md`](ibverbs/README.md) for system setup, the API,
@@ -58,7 +58,7 @@ keyed SGL data placement directly into registered host or CUDA GPU memory. It
 is shipped separately because NVMe protocol policy is above the verbs layer.
 
 ```bash
-python -m pip install nvmeof
+pip install nvmeof
 ```
 
 See [`nvmeof/README.md`](nvmeof/README.md) for target requirements, host and

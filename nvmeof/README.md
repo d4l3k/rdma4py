@@ -35,7 +35,7 @@ On Debian/Ubuntu the runtime packages are typically:
 
 ```bash
 sudo apt-get install libibverbs1 librdmacm1 ibverbs-providers
-python -m pip install nvmeof
+pip install nvmeof
 ```
 
 ## Controller options
