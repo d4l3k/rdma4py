@@ -17,9 +17,13 @@ _ACCESS_OPTIONAL_FIRST = 1 << 20
 class AccessFlags(IntFlag):
     """Memory-region access permissions (``IBV_ACCESS_*``)."""
 
+    #: Permit the local HCA to write the registered memory.
     LOCAL_WRITE = 1
+    #: Permit a remote peer to write the region; also requires ``LOCAL_WRITE``.
     REMOTE_WRITE = 1 << 1
+    #: Permit a remote peer to read the region.
     REMOTE_READ = 1 << 2
+    #: Allow relaxed inbound write ordering for higher performance.
     RELAXED_ORDERING = _ACCESS_OPTIONAL_FIRST
 
 
@@ -51,13 +55,21 @@ class QPState(IntEnum):
 class QPAttrMask(IntFlag):
     """Bitmask selecting which fields ``modify_qp`` applies (``IBV_QP_*``)."""
 
+    #: Apply ``qp_state``.
     STATE = 1 << 0
+    #: Apply ``cur_qp_state`` as a transition precondition.
     CUR_STATE = 1 << 1
+    #: Apply the partition-key table index.
     PKEY_INDEX = 1 << 4
+    #: Apply the local physical port.
     PORT = 1 << 5
+    #: Apply the datagram queue key.
     QKEY = 1 << 6
+    #: Apply the receiver-not-ready retry count.
     RNR_RETRY = 1 << 11
+    #: Apply the receive packet sequence number.
     RQ_PSN = 1 << 12
+    #: Apply the send packet sequence number.
     SQ_PSN = 1 << 16
 
 
@@ -68,10 +80,15 @@ class QPExSendOpsFlags(IntFlag):
     the opcodes enabled here.
     """
 
+    #: Enable RDMA Write work requests.
     RDMA_WRITE = 1 << 0
+    #: Enable RDMA Write with Immediate work requests.
     RDMA_WRITE_WITH_IMM = 1 << 1
+    #: Enable Send work requests.
     SEND = 1 << 2
+    #: Enable Send with Immediate work requests.
     SEND_WITH_IMM = 1 << 3
+    #: Enable RDMA Read work requests.
     RDMA_READ = 1 << 4
 
 
@@ -88,9 +105,13 @@ class WROpcode(IntEnum):
 class SendFlags(IntFlag):
     """Send work-request flags (``IBV_SEND_*``)."""
 
+    #: Fence this request behind earlier RDMA Read or atomic operations.
     FENCE = 1 << 0
+    #: Generate a send completion for this request.
     SIGNALED = 1 << 1
+    #: Request a solicited receive event at the peer.
     SOLICITED = 1 << 2
+    #: Copy the payload into the work request instead of retaining its SGEs.
     INLINE = 1 << 3
 
 
@@ -134,7 +155,9 @@ class WCOpcode(IntEnum):
 class WCFlags(IntFlag):
     """Work-completion flags (``IBV_WC_*`` bit flags)."""
 
+    #: A global route header precedes the received payload.
     GRH = 1 << 0
+    #: The completion contains valid immediate data.
     WITH_IMM = 1 << 1
 
 
@@ -145,13 +168,21 @@ class CreateCQWCFlags(IntFlag):
     default for :meth:`~efa._efa.Context.create_cq_ex`.
     """
 
+    #: Request the completed byte count.
     BYTE_LEN = 1 << 0
+    #: Request immediate data.
     IMM = 1 << 1
+    #: Request the local queue-pair number.
     QP_NUM = 1 << 2
+    #: Request the source queue-pair number.
     SRC_QP = 1 << 3
+    #: Request the source LID.
     SLID = 1 << 4
+    #: Request the service level.
     SL = 1 << 5
+    #: Request destination LID path bits.
     DLID_PATH_BITS = 1 << 6
+    #: Request every field reported by a classic completion queue.
     STANDARD = 0x7F
 
 
@@ -161,11 +192,17 @@ class EfaDeviceCaps(IntFlag):
     Test against :attr:`~efa._efa.EfaDeviceAttr.device_caps`.
     """
 
+    #: The provider supports SRD RDMA Read.
     RDMA_READ = 1 << 0
+    #: The provider supports configurable RNR retry.
     RNR_RETRY = 1 << 1
+    #: Extended completion queues can report sender GIDs.
     CQ_WITH_SGID = 1 << 2
+    #: The provider supports SRD RDMA Write.
     RDMA_WRITE = 1 << 3
+    #: QPs can receive unsolicited RDMA Write with Immediate.
     UNSOLICITED_WRITE_RECV = 1 << 4
+    #: Extended completion-queue memory can be supplied through dma-buf.
     CQ_WITH_EXT_MEM_DMABUF = 1 << 5
 
 

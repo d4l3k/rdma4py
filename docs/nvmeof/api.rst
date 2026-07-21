@@ -9,6 +9,13 @@ Controller and namespace
    :imported-members:
    :undoc-members:
 
+NVMe/RDMA transport
+-------------------
+
+.. automodule:: nvmeof.rdma
+   :members:
+   :undoc-members:
+
 Protocol
 --------
 

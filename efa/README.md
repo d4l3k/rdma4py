@@ -183,7 +183,8 @@ pytest -rs
 
 Tests marked `integration` exercise real EFA hardware. Tests marked `gpu`
 perform torch-verified GPU-to-GPU, GPU-to-host, and host-to-GPU transfers.
-Unavailable hardware capabilities are skipped explicitly.
+Unavailable hardware capabilities are skipped explicitly. Set
+`RDMA4PY_SKIP_HARDWARE_TESTS=1` to force all hardware-dependent tests to skip.
 
 ## License
 

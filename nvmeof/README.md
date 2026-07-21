@@ -38,6 +38,21 @@ sudo apt-get install libibverbs1 librdmacm1 ibverbs-providers
 python -m pip install nvmeof
 ```
 
+## Controller options
+
+`Controller.connect(host, subsystem_nqn, **options)` and the direct
+`Controller(...)` constructor accept the same options:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `port` | `4420` | Target NVMe/RDMA service port. |
+| `host_id` | random UUID | Initiator host identifier. Supply a stable UUID when target policy depends on host identity. |
+| `host_nqn` | derived from `host_id` | Initiator NQN sent in Fabrics Connect. |
+| `queue_depth` | `128` | Requested I/O depth from 2 through 256; the controller may negotiate it downward. |
+| `keep_alive_ms` | `0` | Keep-alive timeout. Non-zero values are currently unsupported because there is no background command worker. |
+| `timeout` | `30.0` | Per-command timeout in seconds. |
+| `source` | `None` | Local initiator IP used to bind RDMA-CM and select the HCA. |
+
 ## Host memory
 
 ```python
@@ -107,10 +122,16 @@ flush. It deliberately does not claim filesystem semantics, multipath,
 reconnect, keep-alive, protection information, authentication, or target
 functionality. KATO is therefore negotiated as zero.
 
-Real-target tests are opt-in through `NVME4PY_TARGET` and
-`NVME4PY_SUBSYSTEM_NQN`. Set `NVME4PY_SOURCE` to bind the initiator to a
-specific HCA address. The GPU round-trip test also requires
-`NVME4PY_DESTRUCTIVE=1` and must only be used with a disposable namespace.
+Real-target tests use these environment variables:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `NVME4PY_TARGET` | unset | Target hostname or IP; required to enable integration tests. |
+| `NVME4PY_SUBSYSTEM_NQN` | unset | Target subsystem NQN; required to enable integration tests. |
+| `NVME4PY_SOURCE` | unset | Optional local initiator IP/HCA binding. |
+| `NVME4PY_NSID` | `1` | Namespace ID used by integration tests. |
+| `NVME4PY_DESTRUCTIVE` | unset | Must equal `1` to enable the write/read GPU round trip. Use only with a disposable namespace. |
+| `NVME4PY_TEST_SLBA` | `0` | Starting LBA overwritten by the destructive test. |
 
 Measured multi-QP bandwidth, latency, QP scaling, and PCIe locality results
 are in [`BENCHMARKS.md`](BENCHMARKS.md).

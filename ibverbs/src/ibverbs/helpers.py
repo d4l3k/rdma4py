@@ -51,12 +51,14 @@ class QPInfo:
             raise ValueError("mtu must be a valid ibv_mtu value (1 through 5)")
 
     def to_bytes(self) -> bytes:
+        """Serialize this endpoint to its fixed network format."""
         return self._STRUCT.pack(
             self.qp_num, self.psn, self.lid, self.gid, self.port, self.mtu
         )
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "QPInfo":
+        """Parse a fixed-size endpoint description."""
         data = bytes(data)
         if len(data) != cls._STRUCT.size:
             raise ValueError(
@@ -101,6 +103,8 @@ def reg_tensor(pd, tensor, access):
 
     Convenience for a contiguous torch CPU tensor or numpy array. For CUDA
     tensors use :func:`ibverbs.cuda.register_tensor` (dma-buf/GPUDirect) instead.
+    ``pd`` is the owning protection domain and ``access`` is an ORed
+    :class:`~ibverbs.enums.AccessFlags` mask.
     """
     if bool(getattr(tensor, "is_cuda", False)):
         raise ValueError(
@@ -118,6 +122,8 @@ def local_qp_info(qp, port_attr, gid, *, port: int, psn: int = 0) -> QPInfo:
 
     ``port_attr`` comes from :meth:`Context.query_port`, ``gid`` from
     :meth:`Context.query_gid` (its ``.raw`` bytes are used).
+    ``port`` records the local physical port and ``psn`` is the starting send
+    packet sequence number that the peer must use as its receive PSN.
     """
     raw = gid.raw if hasattr(gid, "raw") else bytes(gid)
     return QPInfo(
@@ -147,6 +153,18 @@ def connect_rc(
     :meth:`QP.to_rts` in sequence with sensible defaults. Unless explicitly
     overridden, the path MTU is negotiated as the smaller of the local and
     remote active MTUs.
+
+    Args:
+        qp: Local RC queue pair in RESET state.
+        remote: Peer path and queue-pair information.
+        port: Local physical port number.
+        sgid_index: Local source-GID table index.
+        access: ORed :class:`~ibverbs.enums.AccessFlags` for remote access.
+        local_psn: Local starting send packet sequence number.
+        mtu: Explicit path MTU, or ``None`` to negotiate the smaller endpoint
+            MTU.
+        **rts_kwargs: Overrides forwarded to :meth:`QP.to_rts`, such as
+            ``timeout``, ``retry_cnt``, ``rnr_retry``, or ``max_rd_atomic``.
     """
     if mtu is None:
         local_mtu = qp.pd.context.query_port(port).active_mtu

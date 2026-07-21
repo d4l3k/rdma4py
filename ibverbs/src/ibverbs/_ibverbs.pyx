@@ -297,10 +297,12 @@ cdef class Gid:
 
     @property
     def subnet_prefix(self) -> int:
+        """Return the most-significant 64 bits in network byte order."""
         return int.from_bytes(self.raw[:8], "big")
 
     @property
     def interface_id(self) -> int:
+        """Return the least-significant 64 bits in network byte order."""
         return int.from_bytes(self.raw[8:], "big")
 
     def __bytes__(self):
@@ -386,10 +388,12 @@ cdef class WC:
 
     @property
     def is_success(self) -> bool:
+        """Whether the work request completed successfully."""
         return self.status == 0
 
     @property
     def status_str(self) -> str:
+        """Return the provider's human-readable completion status."""
         return _v_wc_status_str(self.status).decode()
 
     def raise_for_status(self):
@@ -476,7 +480,23 @@ cdef class SGE:
 
 
 cdef class SendWR:
-    """A send work request."""
+    """A send work request.
+
+    Args:
+        wr_id: Application-defined value returned in the completion.
+        sg_list: Local :class:`SGE` objects. Defaults to an empty list.
+        opcode: A :class:`~ibverbs.enums.WROpcode` value.
+        send_flags: ORed :class:`~ibverbs.enums.SendFlags` values.
+        remote_addr: Remote virtual address for RDMA and atomic operations.
+        rkey: Remote memory key for RDMA and atomic operations.
+        imm_data: Immediate data for an opcode ending in ``WITH_IMM``.
+        compare_add: Compare operand for Compare and Swap, or add operand for
+            Fetch and Add.
+        swap: Swap operand for Compare and Swap.
+        ah: Address handle for a UD send.
+        remote_qpn: Destination queue-pair number for a UD send.
+        remote_qkey: Destination qkey for a UD send.
+    """
 
     cdef public uint64_t wr_id
     cdef public list sg_list
@@ -509,7 +529,12 @@ cdef class SendWR:
 
 
 cdef class RecvWR:
-    """A receive work request."""
+    """A receive work request.
+
+    Args:
+        wr_id: Application-defined value returned in the completion.
+        sg_list: Local :class:`SGE` objects that receive the payload.
+    """
 
     cdef public uint64_t wr_id
     cdef public list sg_list
@@ -536,7 +561,23 @@ cdef class QPCap:
 
 
 class QPInitAttr:
-    """Parameters for :meth:`PD.create_qp`."""
+    """Parameters for :meth:`PD.create_qp`.
+
+    Args:
+        send_cq: Completion queue for send work requests.
+        recv_cq: Completion queue for receive work requests.
+        qp_type: A :class:`~ibverbs.enums.QPType`; defaults to ``RC``.
+        max_send_wr: Requested maximum outstanding send work requests.
+        max_recv_wr: Requested maximum posted receive work requests. Ignored
+            when ``srq`` is set.
+        max_send_sge: Requested SGE limit for each send request.
+        max_recv_sge: Requested SGE limit for each receive request. Ignored
+            when ``srq`` is set.
+        max_inline_data: Requested maximum inline payload in bytes.
+        srq: Optional :class:`SRQ` used instead of a per-QP receive queue.
+        sq_sig_all: Make every send produce a completion, even without
+            :attr:`~ibverbs.enums.SendFlags.SIGNALED`.
+    """
 
     def __init__(self, send_cq, recv_cq, qp_type=2, max_send_wr=128,
                  max_recv_wr=128, max_send_sge=1, max_recv_sge=1,
@@ -554,7 +595,21 @@ class QPInitAttr:
 
 
 cdef class AHAttr:
-    """Address-handle attributes (also used to reach RTR for RC/UD)."""
+    """Address-handle attributes (also used to reach RTR for RC/UD).
+
+    Args:
+        dgid: Remote 16-byte GID. Defaults to all zeroes.
+        sgid_index: Local source-GID table index.
+        dlid: Remote InfiniBand LID; zero for a global RoCE route.
+        is_global: Whether to populate the global route header.
+        port_num: Local physical port number.
+        hop_limit: Global-route hop limit.
+        traffic_class: Global-route traffic class.
+        sl: InfiniBand service level.
+        flow_label: Global-route flow label.
+        src_path_bits: InfiniBand source path bits.
+        static_rate: InfiniBand static-rate selector.
+    """
 
     cdef public bytes dgid
     cdef public uint32_t flow_label
@@ -700,15 +755,18 @@ cdef class Context:
 
     @property
     def num_comp_vectors(self) -> int:
+        """Return the number of completion interrupt vectors."""
         self._ensure()
         return self._ctx.num_comp_vectors
 
     @property
     def async_fd(self) -> int:
+        """Return the file descriptor used for asynchronous device events."""
         self._ensure()
         return self._ctx.async_fd
 
     def query_device(self) -> DeviceAttr:
+        """Query generic verbs capabilities for this device."""
         self._ensure()
         cdef c.ibv_device_attr a
         cdef int rc = _v_query_device(self._ctx, &a)
@@ -739,6 +797,7 @@ cdef class Context:
         return r
 
     def query_port(self, int port_num) -> PortAttr:
+        """Query attributes for ``port_num``."""
         self._ensure()
         cdef c.ibv_port_attr a
         memset(&a, 0, sizeof(a))
@@ -762,6 +821,7 @@ cdef class Context:
         return r
 
     def query_gid(self, int port_num, int index) -> Gid:
+        """Query GID table entry ``index`` on ``port_num``."""
         self._ensure()
         cdef c.ibv_gid g
         if _v_query_gid(self._ctx, <uint8_t>port_num, index, &g) != 0:
@@ -769,6 +829,7 @@ cdef class Context:
         return Gid(bytes(bytearray(g.raw[:16])))
 
     def alloc_pd(self) -> "PD":
+        """Allocate a protection domain owned by this context."""
         self._ensure()
         cdef c.ibv_pd *pd = _v_alloc_pd(self._ctx)
         if pd is NULL:
@@ -776,6 +837,7 @@ cdef class Context:
         return PD._wrap(pd, self)
 
     def create_comp_channel(self) -> "CompChannel":
+        """Create a completion event channel owned by this context."""
         self._ensure()
         cdef c.ibv_comp_channel *ch = _v_create_comp_channel(self._ctx)
         if ch is NULL:
@@ -783,6 +845,12 @@ cdef class Context:
         return CompChannel._wrap(ch, self)
 
     def create_cq(self, int cqe, channel=None, int comp_vector=0) -> "CQ":
+        """Create a completion queue with space for at least ``cqe`` entries.
+
+        ``channel`` optionally enables event notification, and ``comp_vector``
+        selects its interrupt vector from ``0`` through
+        ``num_comp_vectors - 1``.
+        """
         self._ensure()
         if cqe <= 0:
             raise ValueError("cqe must be positive")
@@ -806,6 +874,7 @@ cdef class Context:
         return cq
 
     def get_async_event(self) -> "AsyncEvent":
+        """Block until an asynchronous device event is available."""
         self._ensure()
         cdef AsyncEvent ev = AsyncEvent.__new__(AsyncEvent)
         cdef int rc
@@ -818,11 +887,13 @@ cdef class Context:
         return ev
 
     def ack_async_event(self, AsyncEvent ev):
+        """Acknowledge an event returned by :meth:`get_async_event`."""
         if not ev._acked:
             _v_ack_async_event(&ev._ev)
             ev._acked = True
 
     def close(self):
+        """Close the device context after all child resources are closed."""
         if self._ctx is not NULL:
             if not self._owned:
                 raise VerbsError(
@@ -864,6 +935,7 @@ cdef class AsyncEvent:
 
     @property
     def event_type_str(self) -> str:
+        """Return the human-readable asynchronous event type."""
         return _v_event_type_str(self.event_type).decode()
 
     def __repr__(self):
@@ -944,6 +1016,7 @@ cdef class PD:
         return MR._wrap(mr, self)
 
     def create_qp(self, init_attr) -> "QP":
+        """Create a queue pair from :class:`QPInitAttr`."""
         self._ensure()
         cdef c.ibv_qp_init_attr a
         memset(&a, 0, sizeof(a))
@@ -975,6 +1048,7 @@ cdef class PD:
         return QP._wrap(qp, self, scq, rcq, srq)
 
     def create_ah(self, AHAttr attr) -> "AH":
+        """Create an address handle from ``attr`` for UD communication."""
         self._ensure()
         cdef c.ibv_ah_attr a
         _fill_ah_attr(&a, attr)
@@ -984,6 +1058,12 @@ cdef class PD:
         return AH._wrap(ah, self)
 
     def create_srq(self, max_wr=128, max_sge=1, srq_limit=0) -> "SRQ":
+        """Create a shared receive queue with the requested capacities.
+
+        ``max_wr`` is the posted receive limit, ``max_sge`` is the SGE limit
+        per receive, and a non-zero ``srq_limit`` requests an asynchronous
+        low-watermark event when the available receives fall below it.
+        """
         self._ensure()
         cdef c.ibv_srq_init_attr a
         memset(&a, 0, sizeof(a))
@@ -996,6 +1076,7 @@ cdef class PD:
         return SRQ._wrap(srq, self)
 
     def close(self):
+        """Deallocate the protection domain when it has no open children."""
         cdef int rc
         if self._pd is not NULL:
             rc = _v_dealloc_pd(self._pd)
@@ -1040,30 +1121,36 @@ cdef class MR:
 
     @property
     def closed(self) -> bool:
+        """Whether this memory region has been deregistered."""
         return self._mr is NULL
 
     @property
     def addr(self) -> int:
+        """Return the registered region's starting virtual address."""
         self._ensure()
         return <uint64_t><uintptr_t>self._mr.addr
 
     @property
     def length(self) -> int:
+        """Return the registered length in bytes."""
         self._ensure()
         return self._mr.length
 
     @property
     def lkey(self) -> int:
+        """Return the local key used by this process's QPs."""
         self._ensure()
         return self._mr.lkey
 
     @property
     def rkey(self) -> int:
+        """Return the key that authorizes remote access."""
         self._ensure()
         return self._mr.rkey
 
     @property
     def handle(self) -> int:
+        """Return the provider memory-region handle."""
         self._ensure()
         return self._mr.handle
 
@@ -1083,6 +1170,7 @@ cdef class MR:
         return self
 
     def close(self):
+        """Deregister this memory region."""
         cdef int rc
         if self._mr is not NULL:
             rc = _v_dereg_mr(self._mr)
@@ -1129,6 +1217,7 @@ cdef class CompChannel:
 
     @property
     def fd(self) -> int:
+        """Return the completion channel's pollable file descriptor."""
         self._ensure()
         return self._chan.fd
 
@@ -1155,6 +1244,7 @@ cdef class CompChannel:
         return obj
 
     def close(self):
+        """Destroy the completion channel after its CQs are closed."""
         cdef int rc
         if self._chan is not NULL:
             rc = _v_destroy_comp_channel(self._chan)
@@ -1192,6 +1282,7 @@ cdef class CQ:
 
     @property
     def cqe(self) -> int:
+        """Return the completion queue's actual entry capacity."""
         self._ensure()
         return self._cq.cqe
 
@@ -1237,6 +1328,7 @@ cdef class CQ:
         self._unacked -= <int>nevents
 
     def close(self):
+        """Destroy this completion queue."""
         cdef int rc
         if self._cq is not NULL:
             if self._unacked > 0:
@@ -1353,11 +1445,13 @@ cdef class QP:
 
     @property
     def qp_num(self) -> int:
+        """Return the provider-assigned queue-pair number."""
         self._ensure()
         return self._qp.qp_num
 
     @property
     def qp_type(self) -> int:
+        """Return this queue pair's transport type."""
         self._ensure()
         return self._qp.qp_type
 
@@ -1450,7 +1544,12 @@ cdef class QP:
 
     # -- RC/UD state-machine helpers -----------------------------------------
     def to_init(self, int port, int access=0, int pkey_index=0, int qkey=0):
-        """Transition RESET -> INIT."""
+        """Transition RESET -> INIT.
+
+        ``port`` selects the local physical port. ``access`` is an ORed
+        :class:`~ibverbs.enums.AccessFlags` mask for RC/UC; ``pkey_index``
+        selects the partition key and ``qkey`` authorizes UD datagrams.
+        """
         self._ensure()
         cdef c.ibv_qp_attr a
         cdef int mask
@@ -1472,7 +1571,15 @@ cdef class QP:
     def to_rtr(self, remote, int sgid_index, mtu=None, int hop_limit=1,
                int min_rnr_timer=12, int max_dest_rd_atomic=1, int sl=0,
                int traffic_class=0):
-        """Transition INIT -> RTR using a remote :class:`~ibverbs.helpers.QPInfo`."""
+        """Transition INIT -> RTR using remote path information.
+
+        ``remote`` is a :class:`~ibverbs.helpers.QPInfo`; ``sgid_index`` picks
+        the local source GID. ``mtu`` defaults to the peer's advertised MTU.
+        ``hop_limit``, ``sl``, and ``traffic_class`` configure the route.
+        ``min_rnr_timer`` controls RNR NAK delay, and ``max_dest_rd_atomic``
+        limits responder resources for incoming RDMA Read/atomic requests.
+        UD ignores these path parameters and only changes state.
+        """
         self._ensure()
         cdef c.ibv_qp_attr a
         cdef int mask
@@ -1510,7 +1617,14 @@ cdef class QP:
 
     def to_rts(self, int psn, int timeout=14, int retry_cnt=7, int rnr_retry=7,
                int max_rd_atomic=1):
-        """Transition RTR -> RTS."""
+        """Transition RTR -> RTS.
+
+        ``psn`` sets the starting send packet sequence number. For RC,
+        ``timeout`` is the local ACK timeout exponent, ``retry_cnt`` controls
+        transport retries, ``rnr_retry`` controls receiver-not-ready retries
+        (7 means infinite), and ``max_rd_atomic`` limits outstanding RDMA
+        Read/atomic requests. UD uses only ``psn``.
+        """
         self._ensure()
         cdef c.ibv_qp_attr a
         cdef int mask
@@ -1549,6 +1663,7 @@ cdef class QP:
         _post_recv_qp(self._qp, wrs)
 
     def close(self):
+        """Destroy this queue pair."""
         cdef int rc
         if self._qp is not NULL:
             if self._cm_id is not NULL:
@@ -1722,6 +1837,7 @@ cdef class AH:
         return self
 
     def close(self):
+        """Destroy this address handle."""
         cdef int rc
         if self._ah is not NULL:
             rc = _v_destroy_ah(self._ah)
@@ -1761,6 +1877,7 @@ cdef class SRQ:
         return self
 
     def post_recv(self, wrs):
+        """Post one or more receive work requests to the shared queue."""
         self._ensure()
         if isinstance(wrs, RecvWR):
             wrs = [wrs]
@@ -1769,6 +1886,7 @@ cdef class SRQ:
         _post_recv_chain(NULL, self._srq, wrs)
 
     def query(self):
+        """Return the shared receive queue's current attributes."""
         self._ensure()
         cdef c.ibv_srq_attr a
         memset(&a, 0, sizeof(a))
@@ -1778,6 +1896,7 @@ cdef class SRQ:
         return {"max_wr": a.max_wr, "max_sge": a.max_sge, "srq_limit": a.srq_limit}
 
     def modify(self, max_wr=None, srq_limit=None):
+        """Update ``max_wr`` and/or the event threshold ``srq_limit``."""
         self._ensure()
         cdef c.ibv_srq_attr a
         cdef int mask = 0
@@ -1793,6 +1912,7 @@ cdef class SRQ:
             _fail_rc("ibv_modify_srq", rc)
 
     def close(self):
+        """Destroy this shared receive queue."""
         cdef int rc
         if self._srq is not NULL:
             rc = _v_destroy_srq(self._srq)
@@ -1840,7 +1960,11 @@ cdef class CMID:
 
     @classmethod
     def resolve(cls, str host, port=4420, source=None):
-        """Resolve ``host:port``, optionally binding a source IP address."""
+        """Resolve an RDMA-CM route and return an endpoint.
+
+        ``host`` and ``port`` select the destination. ``source`` optionally
+        binds a local IP address, which also selects the local RDMA device.
+        """
         if not host or "\x00" in host:
             raise ValueError("host must be a non-empty string without NUL bytes")
         if source is not None:
@@ -1923,10 +2047,12 @@ cdef class CMID:
 
     @property
     def closed(self) -> bool:
+        """Whether this RDMA-CM endpoint has been destroyed."""
         return self._id is NULL
 
     @property
     def connected(self) -> bool:
+        """Whether the endpoint currently has an established connection."""
         return bool(self._connected)
 
     def create_qp(self, PD pd, init_attr) -> QP:
@@ -1973,7 +2099,14 @@ cdef class CMID:
 
     def connect(self, private_data=b"", *, responder_resources=1,
                 initiator_depth=1, retry_count=7, rnr_retry_count=7) -> bytes:
-        """Connect the QP and return the peer's RDMA-CM private data."""
+        """Connect the QP and return the peer's RDMA-CM private data.
+
+        ``private_data`` may contain up to 255 application bytes.
+        ``responder_resources`` advertises incoming RDMA Read/atomic capacity;
+        ``initiator_depth`` requests that capacity from the peer.
+        ``retry_count`` controls transport retries and ``rnr_retry_count``
+        controls receiver-not-ready retries. Each numeric option is uint8.
+        """
         self._ensure()
         if self._id.qp is NULL:
             raise VerbsError("rdma_connect", EBADF, "create a QP before connecting")
@@ -2024,6 +2157,7 @@ cdef class CMID:
         self._connected = False
 
     def close(self):
+        """Destroy the endpoint after its CM-managed resources are closed."""
         if self._id is not NULL:
             if self._id.qp is not NULL:
                 raise VerbsError(

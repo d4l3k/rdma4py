@@ -286,10 +286,12 @@ cdef class Gid:
 
     @property
     def subnet_prefix(self) -> int:
+        """Return the most-significant 64 bits in network byte order."""
         return int.from_bytes(self.raw[:8], "big")
 
     @property
     def interface_id(self) -> int:
+        """Return the least-significant 64 bits in network byte order."""
         return int.from_bytes(self.raw[8:], "big")
 
     def __bytes__(self):
@@ -398,10 +400,12 @@ cdef class WC:
 
     @property
     def is_success(self) -> bool:
+        """Whether the work request completed successfully."""
         return self.status == 0
 
     @property
     def status_str(self) -> str:
+        """Return the provider's human-readable completion status."""
         return _v_wc_status_str(self.status).decode()
 
     def raise_for_status(self):
@@ -512,6 +516,21 @@ cdef class SendWR:
 
     Opcodes: SEND, SEND_WITH_IMM, RDMA_READ, RDMA_WRITE, RDMA_WRITE_WITH_IMM
     (RDMA opcodes additionally need ``remote_addr``/``rkey``).
+
+    Args:
+        wr_id: Application-defined value returned in the completion.
+        sg_list: Local :class:`SGE` objects. Defaults to an empty list.
+        opcode: A :class:`~efa.enums.WROpcode` value; defaults to ``SEND``.
+        send_flags: ORed :class:`~efa.enums.SendFlags` values. EFA requires
+            ``SIGNALED`` unless the QP uses ``sq_sig_all=True``.
+        remote_addr: Remote virtual address for an RDMA operation.
+        rkey: Remote memory key for an RDMA operation.
+        imm_data: Immediate data for an opcode ending in ``WITH_IMM``.
+        ah: Explicit destination address handle.
+        remote_qpn: Explicit destination queue-pair number.
+        remote_qkey: Explicit destination qkey.
+        dest: Convenience object supplying ``ah``, ``qp_num``, and ``qkey``;
+            mutually exclusive with the explicit destination fields.
     """
 
     cdef public uint64_t wr_id
@@ -546,7 +565,12 @@ cdef class SendWR:
 
 
 cdef class RecvWR:
-    """A receive work request."""
+    """A receive work request.
+
+    Args:
+        wr_id: Application-defined value returned in the completion.
+        sg_list: Local :class:`SGE` objects that receive the payload.
+    """
 
     cdef public uint64_t wr_id
     cdef public list sg_list
@@ -575,15 +599,25 @@ cdef class QPCap:
 class QPInitAttr:
     """Parameters for :meth:`PD.create_qp`.
 
-    ``qp_type`` is :attr:`~efa.enums.QPType.SRD` (default) or ``UD``.
-    ``send_ops_flags`` defaults to every operation the QP type supports
-    (SEND/SEND_WITH_IMM, plus the RDMA ops for SRD); pass an explicit
-    :class:`~efa.enums.QPExSendOpsFlags` mask to restrict it; the provider
-    rejects masks including ops the device cannot do, so pass e.g.
-    ``SEND | SEND_WITH_IMM`` on RDMA-less instance types.
-    ``unsolicited_write_recv`` opts in to RDMA-write-with-imm completions
-    that consume no posted recv (check
-    :attr:`~efa.enums.EfaDeviceCaps.UNSOLICITED_WRITE_RECV`).
+    Args:
+        send_cq: Completion queue for send work requests.
+        recv_cq: Completion queue for receive work requests.
+        qp_type: :attr:`~efa.enums.QPType.SRD` (default) or ``UD``.
+        max_send_wr: Requested maximum outstanding send work requests.
+        max_recv_wr: Requested maximum posted receive work requests.
+        max_send_sge: Requested SGE limit for each send request.
+        max_recv_sge: Requested SGE limit for each receive request.
+        max_inline_data: Requested maximum inline payload in bytes.
+        sq_sig_all: Make every send produce a completion, even without the
+            :attr:`~efa.enums.SendFlags.SIGNALED` flag. EFA requires one of
+            these two signaling mechanisms for every send.
+        send_ops_flags: Enabled :class:`~efa.enums.QPExSendOpsFlags`. The
+            default enables every operation supported by the QP type. Pass an
+            explicit mask on devices without RDMA read/write support.
+        sl: EFA service level used when creating an SRD QP.
+        unsolicited_write_recv: Accept RDMA-write-with-immediate without a
+            posted receive. Requires the matching EFA device capability and
+            an extended CQ created with ``unsolicited=True``.
     """
 
     def __init__(self, send_cq, recv_cq, qp_type=None, max_send_wr=128,
@@ -612,6 +646,15 @@ cdef class AHAttr:
     EFA addresses are GIDs: only ``dgid`` (the remote device's GID),
     ``sgid_index`` and ``port_num`` matter; the rest exists for parity with
     generic verbs.
+
+    Args:
+        dgid: Remote 16-byte GID. Defaults to all zeroes.
+        sgid_index: Local source-GID table index.
+        port_num: Local physical port number.
+        hop_limit: Global-route hop limit.
+        traffic_class: Global-route traffic class.
+        flow_label: Global-route flow label.
+        is_global: Whether to populate the global route header.
     """
 
     cdef public bytes dgid
@@ -755,11 +798,13 @@ cdef class Context:
 
     @property
     def num_comp_vectors(self) -> int:
+        """Return the number of completion interrupt vectors."""
         self._ensure()
         return self._ctx.num_comp_vectors
 
     @property
     def async_fd(self) -> int:
+        """Return the file descriptor used for asynchronous device events."""
         self._ensure()
         return self._ctx.async_fd
 
@@ -771,6 +816,7 @@ cdef class Context:
         return _e_query_device(self._ctx, &a, sizeof(a)) == 0
 
     def query_device(self) -> DeviceAttr:
+        """Query generic verbs capabilities for this device."""
         self._ensure()
         cdef c.ibv_device_attr a
         cdef int rc = _v_query_device(self._ctx, &a)
@@ -818,6 +864,7 @@ cdef class Context:
         return r
 
     def query_port(self, int port_num=1) -> PortAttr:
+        """Query attributes for ``port_num``."""
         self._ensure()
         cdef c.ibv_port_attr a
         memset(&a, 0, sizeof(a))
@@ -847,6 +894,7 @@ cdef class Context:
         return Gid(bytes(bytearray(g.raw[:16])))
 
     def alloc_pd(self) -> "PD":
+        """Allocate a protection domain owned by this context."""
         self._ensure()
         cdef c.ibv_pd *pd = _v_alloc_pd(self._ctx)
         if pd is NULL:
@@ -854,6 +902,7 @@ cdef class Context:
         return PD._wrap(pd, self)
 
     def create_comp_channel(self) -> "CompChannel":
+        """Create a completion event channel owned by this context."""
         self._ensure()
         cdef c.ibv_comp_channel *ch = _v_create_comp_channel(self._ctx)
         if ch is NULL:
@@ -861,7 +910,12 @@ cdef class Context:
         return CompChannel._wrap(ch, self)
 
     def create_cq(self, int cqe, channel=None, int comp_vector=0) -> "CQ":
-        """Create a classic completion queue (``ibv_create_cq``)."""
+        """Create a classic completion queue (``ibv_create_cq``).
+
+        ``cqe`` is the requested minimum capacity. ``channel`` optionally
+        enables event notification, and ``comp_vector`` selects its interrupt
+        vector from ``0`` through ``num_comp_vectors - 1``.
+        """
         self._ensure()
         if cqe <= 0:
             raise ValueError("cqe must be positive")
@@ -896,6 +950,10 @@ cdef class Context:
         ``unsolicited=True`` requests an indicator for unsolicited
         write-with-immediate receive completions (needs
         :attr:`~efa.enums.EfaDeviceCaps.UNSOLICITED_WRITE_RECV`).
+
+        ``cqe``, ``channel``, and ``comp_vector`` have the same meaning as in
+        :meth:`create_cq`. ``wc_flags`` is an ORed
+        :class:`~efa.enums.CreateCQWCFlags` mask and defaults to ``STANDARD``.
         """
         self._ensure()
         if cqe <= 0:
@@ -938,6 +996,7 @@ cdef class Context:
         return cq
 
     def get_async_event(self) -> "AsyncEvent":
+        """Block until an asynchronous device event is available."""
         self._ensure()
         cdef AsyncEvent ev = AsyncEvent.__new__(AsyncEvent)
         cdef int rc
@@ -950,11 +1009,13 @@ cdef class Context:
         return ev
 
     def ack_async_event(self, AsyncEvent ev):
+        """Acknowledge an event returned by :meth:`get_async_event`."""
         if not ev._acked:
             _v_ack_async_event(&ev._ev)
             ev._acked = True
 
     def close(self):
+        """Close the device context after all child resources are closed."""
         if self._ctx is not NULL:
             if self._children != 0:
                 raise EfaError(
@@ -991,6 +1052,7 @@ cdef class AsyncEvent:
 
     @property
     def event_type_str(self) -> str:
+        """Return the human-readable asynchronous event type."""
         return _v_event_type_str(self.event_type).decode()
 
     def __repr__(self):
@@ -1156,6 +1218,7 @@ cdef class PD:
         return AH._wrap(ah, self)
 
     def close(self):
+        """Deallocate the protection domain when it has no open children."""
         cdef int rc
         if self._pd is not NULL:
             rc = _v_dealloc_pd(self._pd)
@@ -1215,30 +1278,36 @@ cdef class MR:
 
     @property
     def closed(self) -> bool:
+        """Whether this memory region has been deregistered."""
         return self._mr is NULL
 
     @property
     def addr(self) -> int:
+        """Return the registered region's starting virtual address."""
         self._ensure()
         return <uint64_t><uintptr_t>self._mr.addr
 
     @property
     def length(self) -> int:
+        """Return the registered length in bytes."""
         self._ensure()
         return self._mr.length
 
     @property
     def lkey(self) -> int:
+        """Return the local key used by this process's QPs."""
         self._ensure()
         return self._mr.lkey
 
     @property
     def rkey(self) -> int:
+        """Return the key that authorizes remote access."""
         self._ensure()
         return self._mr.rkey
 
     @property
     def handle(self) -> int:
+        """Return the provider memory-region handle."""
         self._ensure()
         return self._mr.handle
 
@@ -1276,6 +1345,7 @@ cdef class MR:
         return self
 
     def close(self):
+        """Deregister this memory region."""
         cdef int rc
         if self._mr is not NULL:
             rc = _v_dereg_mr(self._mr)
@@ -1322,6 +1392,7 @@ cdef class CompChannel:
 
     @property
     def fd(self) -> int:
+        """Return the completion channel's pollable file descriptor."""
         self._ensure()
         return self._chan.fd
 
@@ -1349,6 +1420,7 @@ cdef class CompChannel:
         return obj
 
     def close(self):
+        """Destroy the completion channel after its CQs are closed."""
         cdef int rc
         if self._chan is not NULL:
             rc = _v_destroy_comp_channel(self._chan)
@@ -1388,6 +1460,7 @@ cdef class _CQBase:
 
     @property
     def cqe(self) -> int:
+        """Return the completion queue's actual entry capacity."""
         self._ensure()
         return self._ptr().cqe
 
@@ -1410,6 +1483,7 @@ cdef class _CQBase:
         self._unacked -= <int>nevents
 
     def close(self):
+        """Destroy this completion queue."""
         raise NotImplementedError
 
     def __enter__(self):
@@ -1481,6 +1555,7 @@ cdef class CQ(_CQBase):
         return _query_efa_cq(self._cq)
 
     def close(self):
+        """Destroy this classic completion queue."""
         cdef int rc
         if self._cq is not NULL:
             if self._unacked > 0:
@@ -1521,10 +1596,12 @@ cdef class CQEx(_CQBase):
 
     @property
     def sgid_enabled(self) -> bool:
+        """Whether polled completions request sender GID metadata."""
         return self._sgid
 
     @property
     def unsolicited_enabled(self) -> bool:
+        """Whether unsolicited-write completion metadata is enabled."""
         return self._unsolicited
 
     def poll(self, int num_entries) -> list:
@@ -1585,6 +1662,7 @@ cdef class CQEx(_CQBase):
         return _query_efa_cq(c.ibv_cq_ex_to_cq(self._cqx))
 
     def close(self):
+        """Destroy this extended completion queue."""
         cdef int rc
         cdef c.ibv_cq *cq
         if self._cqx is not NULL:
@@ -1743,6 +1821,7 @@ cdef class QP:
 
     @property
     def qp_num(self) -> int:
+        """Return the provider-assigned queue-pair number."""
         self._ensure()
         return self._qp.qp_num
 
@@ -1816,7 +1895,11 @@ cdef class QP:
 
     # -- SRD/UD state machine --------------------------------------------- #
     def to_init(self, qkey, int port=1, int pkey_index=0):
-        """Transition RESET -> INIT, binding the qkey."""
+        """Transition RESET -> INIT.
+
+        ``qkey`` authorizes incoming datagrams; ``port`` selects the local
+        physical port and ``pkey_index`` selects its partition-key entry.
+        """
         self._ensure()
         cdef c.ibv_qp_attr a
         memset(&a, 0, sizeof(a))
@@ -1842,8 +1925,9 @@ cdef class QP:
     def to_rts(self, psn=0, rnr_retry=None):
         """Transition RTR -> RTS.
 
-        ``rnr_retry`` (0-7, 7 = infinite) is EFA's receiver-not-ready retry
-        count; needs :attr:`~efa.enums.EfaDeviceCaps.RNR_RETRY`.
+        ``psn`` sets the starting send packet sequence number. ``rnr_retry``
+        (0-7, 7 = infinite) is EFA's receiver-not-ready retry count and needs
+        :attr:`~efa.enums.EfaDeviceCaps.RNR_RETRY`.
         """
         self._ensure()
         cdef c.ibv_qp_attr a
@@ -1863,6 +1947,9 @@ cdef class QP:
 
         SRD/UD are connectionless, so a QP is fully usable after this without
         any remote information; destinations are named per-send.
+
+        ``qkey``, ``port``, ``psn``, and ``rnr_retry`` are forwarded to the
+        corresponding state-transition methods.
         """
         self.to_init(qkey, port=port)
         self.to_rtr()
@@ -1924,6 +2011,7 @@ cdef class QP:
         return s, r
 
     def close(self):
+        """Destroy this queue pair."""
         cdef int rc
         if self._qp is not NULL:
             rc = _v_destroy_qp(self._qp)
@@ -2135,6 +2223,7 @@ cdef class AH:
         return a.ahn
 
     def close(self):
+        """Destroy this address handle."""
         cdef int rc
         if self._ah is not NULL:
             rc = _v_destroy_ah(self._ah)

@@ -18,11 +18,21 @@ _INDEX_MASK = (1 << 32) - 1
 
 
 class QueueFullError(RuntimeError):
-    pass
+    """Raised when every command ID on an NVMe/RDMA queue is in use."""
 
 
 class HostBuffer:
-    """Pinned host allocation registered with one NVMe/RDMA queue's PD."""
+    """Pinned host allocation registered with an NVMe/RDMA queue's PD.
+
+    Args:
+        pd: Protection domain used to register the allocation.
+        length: Allocation size in bytes.
+        access: Optional verbs access mask. By default the buffer permits the
+            local and remote operations required by NVMe/RDMA.
+
+    The buffer is a context manager. Close it before closing the protection
+    domain or controller that owns ``pd``.
+    """
 
     def __init__(self, pd, length: int, access=None):
         length = int(length)
@@ -41,17 +51,21 @@ class HostBuffer:
 
     @property
     def rkey(self) -> int:
+        """Return the remote key encoded in NVMe keyed SGL descriptors."""
         return self.mr.rkey
 
     @property
     def lkey(self) -> int:
+        """Return the local key used for initiator work requests."""
         return self.mr.lkey
 
     @property
     def closed(self) -> bool:
+        """Whether the underlying memory region has been deregistered."""
         return self.mr.closed
 
     def write(self, data: bytes, offset: int = 0) -> None:
+        """Copy ``data`` into this allocation at byte ``offset``."""
         data = bytes(data)
         offset = int(offset)
         if offset < 0 or len(data) > self.length - offset:
@@ -59,6 +73,11 @@ class HostBuffer:
         ctypes.memmove(self.addr + offset, data, len(data))
 
     def read(self, length=None, offset: int = 0) -> bytes:
+        """Copy bytes from this allocation into a new :class:`bytes` object.
+
+        ``length`` defaults to all bytes from ``offset`` through the end of
+        the allocation.
+        """
         offset = int(offset)
         if length is None:
             length = self.length - offset
@@ -68,6 +87,7 @@ class HostBuffer:
         return ctypes.string_at(self.addr + offset, length)
 
     def close(self) -> None:
+        """Deregister the memory region."""
         self.mr.close()
 
     def __enter__(self):
@@ -80,6 +100,14 @@ class HostBuffer:
 
 @dataclass
 class Request:
+    """State retained for an asynchronously submitted NVMe command.
+
+    A request becomes :attr:`done` only after both the capsule SEND and the
+    matching NVMe response complete. ``data_owner`` keeps any keyed-SGL
+    allocation alive while the command is outstanding. Callers should treat
+    the state fields as read-only.
+    """
+
     command_id: int
     data_owner: object = None
     send_complete: bool = False
@@ -88,7 +116,21 @@ class Request:
 
 
 class RDMAQueue:
-    """One connected NVMe/RDMA submission/completion queue pair."""
+    """One connected NVMe/RDMA submission/completion queue pair.
+
+    This is the low-level command transport used by :class:`Controller`.
+    Queue construction resolves the route, creates an RC QP, connects with
+    NVMe/RDMA private data, and posts the response receives.
+
+    Args:
+        host: Target hostname or IP address.
+        port: Target NVMe/RDMA service port.
+        qid: NVMe queue identifier. Zero creates an admin queue.
+        depth: Queue depth from 2 through 256. At most ``depth - 1`` commands
+            may be outstanding.
+        controller_id: Connected controller ID for an I/O queue.
+        source: Optional initiator IP address used to select the local HCA.
+    """
 
     def __init__(
         self,
@@ -158,10 +200,12 @@ class RDMAQueue:
 
     @property
     def closed(self) -> bool:
+        """Whether queue shutdown has begun."""
         return self._closed
 
     @property
     def outstanding(self) -> int:
+        """Return the number of commands awaiting transport completion."""
         return len(self._pending)
 
     def _recv_wr(self, slot: int):
@@ -171,6 +215,16 @@ class RDMAQueue:
         )
 
     def submit(self, command: bytes, data_owner=None) -> Request:
+        """Submit one 64-byte command capsule without waiting.
+
+        The queue assigns and writes the command ID. ``data_owner`` should own
+        any buffer addressed by the command's keyed SGL so it remains alive
+        until the returned request completes. Call :meth:`poll` to advance
+        and retrieve completed requests.
+
+        Raises:
+            QueueFullError: If ``depth - 1`` commands are already outstanding.
+        """
         if self._closed:
             raise RuntimeError("NVMe/RDMA queue is closed")
         if len(command) != 64:
@@ -206,6 +260,12 @@ class RDMAQueue:
             self._completed.append(request)
 
     def poll(self, max_entries=None):
+        """Poll transport completions and return newly completed requests.
+
+        A request is returned only after its capsule SEND completion and
+        matching NVMe response have both arrived. This method does not block;
+        ``max_entries`` defaults to enough entries to drain the CQ.
+        """
         if self._closed:
             return []
         if max_entries is None:
@@ -238,6 +298,21 @@ class RDMAQueue:
         return completed
 
     def execute(self, command: bytes, data_owner=None, timeout: float = 30.0):
+        """Submit a command and wait for its successful NVMe completion.
+
+        Args:
+            command: Exactly one 64-byte NVMe command capsule.
+            data_owner: Optional owner of the command's keyed-SGL buffer.
+            timeout: Maximum wait in seconds.
+
+        Returns:
+            The matching :class:`~nvmeof.protocol.Completion`.
+
+        Raises:
+            TimeoutError: If the request does not finish before ``timeout``.
+            nvmeof.protocol.NVMeStatusError: If the target returns a non-zero
+                NVMe status.
+        """
         request = self.submit(command, data_owner=data_owner)
         deadline = time.monotonic() + float(timeout)
         while not request.done:
@@ -251,6 +326,7 @@ class RDMAQueue:
         return response
 
     def close(self) -> None:
+        """Disconnect and close every RDMA resource owned by this queue."""
         if self._closed and all(
             resource is None
             for resource in (

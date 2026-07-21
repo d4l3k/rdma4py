@@ -17,16 +17,27 @@ _ACCESS_OPTIONAL_FIRST = 1 << 20
 class AccessFlags(IntFlag):
     """Memory-region / QP access permissions (``IBV_ACCESS_*``)."""
 
+    #: Permit the local HCA to write the registered memory.
     LOCAL_WRITE = 1
+    #: Permit a remote peer to write the region; also requires ``LOCAL_WRITE``.
     REMOTE_WRITE = 1 << 1
+    #: Permit a remote peer to read the region.
     REMOTE_READ = 1 << 2
+    #: Permit remote atomic operations; also requires ``LOCAL_WRITE``.
     REMOTE_ATOMIC = 1 << 3
+    #: Permit binding this region into a memory window.
     MW_BIND = 1 << 4
+    #: Interpret SGE addresses as offsets from the MR base address.
     ZERO_BASED = 1 << 5
+    #: Register the region with on-demand paging.
     ON_DEMAND = 1 << 6
+    #: Assert that the on-demand-paging region is backed by huge pages.
     HUGETLB = 1 << 7
+    #: Permit remote flushes to global visibility.
     FLUSH_GLOBAL = 1 << 8
+    #: Permit remote flushes to persistent storage.
     FLUSH_PERSISTENT = 1 << 9
+    #: Allow relaxed inbound write ordering for higher performance.
     RELAXED_ORDERING = _ACCESS_OPTIONAL_FIRST
 
 
@@ -58,27 +69,49 @@ class QPState(IntEnum):
 class QPAttrMask(IntFlag):
     """Bitmask selecting which fields ``modify_qp`` applies (``IBV_QP_*``)."""
 
+    #: Apply ``qp_state``.
     STATE = 1 << 0
+    #: Apply ``cur_qp_state`` as a transition precondition.
     CUR_STATE = 1 << 1
+    #: Apply send-queue-drained asynchronous notification.
     EN_SQD_ASYNC_NOTIFY = 1 << 2
+    #: Apply QP access permissions.
     ACCESS_FLAGS = 1 << 3
+    #: Apply the partition-key table index.
     PKEY_INDEX = 1 << 4
+    #: Apply the local physical port.
     PORT = 1 << 5
+    #: Apply the datagram queue key.
     QKEY = 1 << 6
+    #: Apply the address vector.
     AV = 1 << 7
+    #: Apply the path MTU.
     PATH_MTU = 1 << 8
+    #: Apply the local ACK timeout exponent.
     TIMEOUT = 1 << 9
+    #: Apply the transport retry count.
     RETRY_CNT = 1 << 10
+    #: Apply the receiver-not-ready retry count.
     RNR_RETRY = 1 << 11
+    #: Apply the receive packet sequence number.
     RQ_PSN = 1 << 12
+    #: Apply the initiator RDMA Read/atomic depth.
     MAX_QP_RD_ATOMIC = 1 << 13
+    #: Apply the alternate path.
     ALT_PATH = 1 << 14
+    #: Apply the minimum receiver-not-ready timer.
     MIN_RNR_TIMER = 1 << 15
+    #: Apply the send packet sequence number.
     SQ_PSN = 1 << 16
+    #: Apply the responder RDMA Read/atomic depth.
     MAX_DEST_RD_ATOMIC = 1 << 17
+    #: Apply the path-migration state.
     PATH_MIG_STATE = 1 << 18
+    #: Apply queue-pair capacity limits.
     CAP = 1 << 19
+    #: Apply the destination queue-pair number.
     DEST_QPN = 1 << 20
+    #: Apply the packet pacing rate limit.
     RATE_LIMIT = 1 << 25
 
 
@@ -101,10 +134,15 @@ class WROpcode(IntEnum):
 class SendFlags(IntFlag):
     """Send work-request flags (``IBV_SEND_*``)."""
 
+    #: Fence this request behind earlier RDMA Read or atomic operations.
     FENCE = 1 << 0
+    #: Generate a send completion for this request.
     SIGNALED = 1 << 1
+    #: Request a solicited receive event at the peer.
     SOLICITED = 1 << 2
+    #: Copy the payload into the work request instead of retaining its SGEs.
     INLINE = 1 << 3
+    #: Ask a raw-packet QP to calculate the IP checksum.
     IP_CSUM = 1 << 4
 
 
@@ -155,12 +193,19 @@ class WCOpcode(IntEnum):
 class WCFlags(IntFlag):
     """Work-completion flags (``IBV_WC_*`` bit flags)."""
 
+    #: A global route header precedes the received payload.
     GRH = 1 << 0
+    #: The completion contains valid immediate data.
     WITH_IMM = 1 << 1
+    #: The received IP checksum was verified successfully.
     IP_CSUM_OK = 1 << 2
+    #: The completion contains a valid invalidated rkey.
     WITH_INV = 1 << 3
+    #: A tag-matching synchronization operation completed.
     TM_SYNC_REQ = 1 << 4
+    #: A tag-matching receive matched.
     TM_MATCH = 1 << 5
+    #: Tag-matching completion data is valid.
     TM_DATA_VALID = 1 << 6
 
 

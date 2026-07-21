@@ -46,10 +46,12 @@ class EndpointInfo:
             raise ValueError("qkey must be a 32-bit value")
 
     def to_bytes(self) -> bytes:
+        """Serialize this endpoint to its fixed 24-byte network format."""
         return self._STRUCT.pack(self.gid, self.qp_num, self.qkey)
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "EndpointInfo":
+        """Parse a fixed 24-byte endpoint description."""
         data = bytes(data)
         if len(data) != cls._STRUCT.size:
             raise ValueError(
@@ -60,7 +62,11 @@ class EndpointInfo:
         return cls(gid=gid, qp_num=qp_num, qkey=qkey)
 
     def peer(self, pd, sgid_index: int = 0, port: int = 1) -> "Peer":
-        """Create the :class:`Peer` (AH + addressing) for this endpoint."""
+        """Create the :class:`Peer` (AH + addressing) for this endpoint.
+
+        ``pd`` owns the new address handle; ``sgid_index`` and ``port`` select
+        the local source GID and physical port used to reach the peer.
+        """
         ah = pd.create_ah(self.gid, sgid_index=sgid_index, port_num=port)
         return Peer(ah=ah, qp_num=self.qp_num, qkey=self.qkey)
 
@@ -78,6 +84,7 @@ class Peer:
         self.qkey = int(qkey)
 
     def close(self) -> None:
+        """Destroy the owned address handle, if it is still open."""
         if self.ah is not None:
             self.ah.close()
             self.ah = None
@@ -99,7 +106,8 @@ def local_endpoint_info(
     """Build an :class:`EndpointInfo` describing ``qp`` for sending to a peer.
 
     ``qkey`` must match what the QP was prepared with. The GID is queried
-    from the QP's device unless passed explicitly.
+    from the QP's device unless passed explicitly. ``gid_index`` and ``port``
+    select that query when ``gid`` is omitted.
     """
     if gid is None:
         gid = qp.pd.context.query_gid(port, gid_index)
@@ -141,6 +149,8 @@ def reg_tensor(pd, tensor, access):
 
     Convenience for a contiguous torch CPU tensor or numpy array. For CUDA
     tensors use :func:`efa.cuda.register_tensor` (dma-buf/GPUDirect) instead.
+    ``pd`` is the owning protection domain and ``access`` is an ORed
+    :class:`~efa.enums.AccessFlags` mask.
     """
     if bool(getattr(tensor, "is_cuda", False)):
         raise ValueError(
@@ -210,6 +220,10 @@ def write_wrs(
     ``mr`` may be an :class:`~efa._efa.MR` or a GpuMR-like object exposing
     ``addr``/``length``/``lkey``. Returns a list of SendWRs to pass to
     :meth:`~efa._efa.QP.post_send`; ``wr_id`` numbers them sequentially.
+
+    ``dest`` names the remote EFA peer; ``remote_addr`` and ``rkey`` select
+    its memory region. ``length`` defaults to the local MR remainder after
+    ``offset``. ``chunk`` is the maximum bytes per WR.
     """
     from .enums import WROpcode
 
@@ -229,7 +243,13 @@ def read_wrs(
     chunk: int = 1 << 30,
     wr_id: int = 0,
 ):
-    """Like :func:`write_wrs` but for RDMA reads into ``mr``."""
+    """Build the work requests for an RDMA read into ``mr``.
+
+    ``dest`` names the remote EFA peer; ``remote_addr`` and ``rkey`` select
+    its memory region. ``length`` defaults to the local MR remainder after
+    ``offset``. ``chunk`` is the maximum bytes per WR, and ``wr_id`` seeds the
+    sequential request identifiers.
+    """
     from .enums import WROpcode
 
     return _chunked_rdma_wrs(

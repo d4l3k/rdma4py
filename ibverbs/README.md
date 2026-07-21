@@ -200,6 +200,7 @@ pytest -m integration                     # only real-hardware tests
 ```
 
 Markers: `integration` (needs an RDMA NIC), `gpu` (needs CUDA + torch).
+Set `RDMA4PY_SKIP_HARDWARE_TESTS=1` to force hardware-dependent tests to skip.
 
 ## License
 

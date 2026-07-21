@@ -94,17 +94,21 @@ class GpuMR:
 
     @property
     def closed(self) -> bool:
+        """Whether the underlying memory region has been deregistered."""
         return self.mr.closed
 
     @property
     def lkey(self) -> int:
+        """Return the local key used in scatter/gather entries."""
         return self.mr.lkey
 
     @property
     def rkey(self) -> int:
+        """Return the remote key shared with an RDMA peer."""
         return self.mr.rkey
 
     def sge(self, length=None, offset=0):
+        """Build an SGE for a byte range of this GPU memory region."""
         offset = int(offset)
         if offset < 0 or offset > self.length:
             raise ValueError("SGE offset is outside the GPU memory region")
@@ -118,6 +122,7 @@ class GpuMR:
         )._keepalive(self)
 
     def close(self):
+        """Deregister the memory region and release the retained tensor."""
         self.mr.close()
         self._tensor = None
 
@@ -192,7 +197,9 @@ def flush_gpudirect_writes(*, all_devices: bool = False) -> None:
     Call this after the relevant receive/completion or application-level
     remote-write notification, before launching CUDA work that consumes the
     destination tensor. The current thread must have the destination tensor's
-    CUDA context active.
+    CUDA context active. By default CUDA flushes writes only to the owning
+    device; set ``all_devices=True`` to flush visibility to every GPU in the
+    current context's scope.
     """
     flush = getattr(_cuda(), "cuFlushGPUDirectRDMAWrites", None)
     if flush is None:
@@ -225,6 +232,9 @@ def register_tensor(pd, tensor, access) -> GpuMR:
     path when dma-buf export or registration is unavailable. The returned
     object retains ``tensor`` so its allocation cannot be recycled while the
     MR is registered.
+
+    ``pd`` is the owning protection domain and ``access`` is an ORed
+    :class:`~ibverbs.enums.AccessFlags` mask.
     """
     is_cuda = getattr(tensor, "is_cuda", None)
     if is_cuda is not None and not bool(is_cuda):

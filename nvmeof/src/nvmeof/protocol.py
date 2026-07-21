@@ -6,37 +6,64 @@ import struct
 import uuid
 from dataclasses import dataclass
 
+#: IANA service port for NVMe over Fabrics/RDMA.
 NVME_RDMA_PORT = 4420
+#: Queue depth used for the controller's admin queue.
 ADMIN_QUEUE_DEPTH = 32
+#: Largest queue supported by this initiator's command-ID layout.
 MAX_QUEUE_DEPTH = 256
+#: Largest byte count representable by one keyed SGL descriptor.
 MAX_KEYED_SGL_LENGTH = (1 << 24) - 1
 
+#: NVM Flush opcode.
 OPC_FLUSH = 0x00
+#: NVM Write opcode.
 OPC_WRITE = 0x01
+#: NVM Read opcode.
 OPC_READ = 0x02
+#: Admin Identify opcode.
 OPC_IDENTIFY = 0x06
+#: Admin Set Features opcode.
 OPC_SET_FEATURES = 0x09
+#: Fabrics command opcode.
 OPC_FABRICS = 0x7F
 
+#: Fabrics Property Set command type.
 FCTYPE_PROPERTY_SET = 0x00
+#: Fabrics Connect command type.
 FCTYPE_CONNECT = 0x01
+#: Fabrics Property Get command type.
 FCTYPE_PROPERTY_GET = 0x04
 
+#: Controller Capabilities property offset.
 REG_CAP = 0x00
+#: Controller Version property offset.
 REG_VS = 0x08
+#: Controller Configuration property offset.
 REG_CC = 0x14
+#: Controller Status property offset.
 REG_CSTS = 0x1C
 
+#: Controller Configuration enable bit.
 CC_ENABLE = 1
+#: Controller Configuration command-set selection for CSI.
 CC_CSS_CSI = 6 << 4
+#: Controller Configuration memory-page-size shift.
 CC_MPS_SHIFT = 7
+#: Controller Configuration I/O submission queue entry size.
 CC_IOSQES = 6 << 16
+#: Controller Configuration I/O completion queue entry size.
 CC_IOCQES = 4 << 20
+#: Controller Status ready bit.
 CSTS_READY = 1
+#: Controller Status fatal-status bit.
 CSTS_FATAL = 1 << 1
 
+#: Set Features identifier for Number of Queues.
 FEAT_NUMBER_OF_QUEUES = 0x07
+#: Command data-pointer flag selecting an SGL.
 PSDT_SGL = 1 << 6
+#: NVMe/RDMA keyed data block SGL descriptor type.
 KEYED_DATA_BLOCK = 0x40
 
 
@@ -56,6 +83,13 @@ class NVMeStatusError(OSError):
 
 @dataclass(frozen=True)
 class Completion:
+    """Decoded 16-byte NVMe completion queue entry.
+
+    ``status_field`` retains the phase bit exactly as received. The derived
+    status properties remove that bit and expose the NVMe status code, status
+    code type, and do-not-retry flag.
+    """
+
     result: int
     sq_head: int
     sq_id: int
@@ -64,37 +98,50 @@ class Completion:
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "Completion":
+        """Decode the first 16 bytes of an NVMe completion queue entry."""
         if len(data) < 16:
             raise ValueError("an NVMe completion must be at least 16 bytes")
         return cls(*struct.unpack_from("<QHHHH", data))
 
     @property
     def status(self) -> int:
+        """Return the status field with its phase bit removed."""
         return self.status_field >> 1
 
     @property
     def status_code(self) -> int:
+        """Return the eight-bit NVMe status code (SC)."""
         return self.status & 0xFF
 
     @property
     def status_type(self) -> int:
+        """Return the three-bit status code type (SCT)."""
         return (self.status >> 8) & 0x7
 
     @property
     def do_not_retry(self) -> bool:
+        """Whether the target marked this command as not retryable."""
         return bool(self.status & (1 << 14))
 
     @property
     def succeeded(self) -> bool:
+        """Whether both the status code and status code type are zero."""
         return (self.status & 0x7FF) == 0
 
     def raise_for_status(self) -> None:
+        """Raise :class:`NVMeStatusError` unless the command succeeded."""
         if not self.succeeded:
             raise NVMeStatusError(self)
 
 
 @dataclass(frozen=True)
 class ControllerInfo:
+    """Controller fields consumed from a 4096-byte Identify response.
+
+    The record includes display identity, MDTS, controller and namespace
+    limits, keyed-SGL capability bits, and NVMe-oF capsule sizing fields.
+    """
+
     serial: str
     model: str
     firmware: str
@@ -110,6 +157,7 @@ class ControllerInfo:
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "ControllerInfo":
+        """Parse an Identify Controller data structure."""
         if len(data) < 4096:
             raise ValueError("Identify Controller data must be 4096 bytes")
 
@@ -134,6 +182,8 @@ class ControllerInfo:
 
 @dataclass(frozen=True)
 class NamespaceInfo:
+    """Namespace capacity and active LBA-format information."""
+
     nsid: int
     size_lbas: int
     capacity_lbas: int
@@ -143,6 +193,7 @@ class NamespaceInfo:
 
     @classmethod
     def from_bytes(cls, nsid: int, data: bytes) -> "NamespaceInfo":
+        """Parse an Identify Namespace data structure for ``nsid``."""
         if len(data) < 4096:
             raise ValueError("Identify Namespace data must be 4096 bytes")
         fmt = data[26] & 0x0F
@@ -170,7 +221,11 @@ def _command(opcode: int, nsid: int = 0) -> bytearray:
 
 
 def set_keyed_sgl(command: bytearray, buffer, length=None, offset=0) -> None:
-    """Point a command at a registered host MR or ``ibverbs.cuda.GpuMR``."""
+    """Point a command at a registered host MR or ``ibverbs.cuda.GpuMR``.
+
+    ``buffer`` must expose ``addr``, ``length``, and ``rkey``. The selected
+    range must fit one 24-bit keyed data block descriptor.
+    """
     offset = int(offset)
     total = int(buffer.length)
     if offset < 0 or offset > total:
@@ -196,6 +251,11 @@ def set_keyed_sgl(command: bytearray, buffer, length=None, offset=0) -> None:
 
 
 def rdma_cm_request(qid: int, depth: int, controller_id: int = 0) -> bytes:
+    """Build the 32-byte NVMe/RDMA connection-management request record.
+
+    The admin queue (``qid=0``) always encodes controller ID zero. I/O queues
+    encode the ID returned by the admin Fabrics Connect command.
+    """
     qid = int(qid)
     depth = int(depth)
     if qid < 0 or qid > 0xFFFF:
@@ -209,6 +269,7 @@ def rdma_cm_request(qid: int, depth: int, controller_id: int = 0) -> bytes:
 
 
 def parse_rdma_cm_response(data: bytes) -> int:
+    """Validate NVMe/RDMA CM response data and return its receive queue size."""
     if len(data) < 4:
         raise ValueError("NVMe/RDMA CM response is shorter than 4 bytes")
     recfmt, crqsize = struct.unpack_from("<HH", data)
@@ -222,6 +283,11 @@ def parse_rdma_cm_response(data: bytes) -> int:
 def connect_data(
     host_id, subsystem_nqn: str, host_nqn: str, controller_id: int
 ) -> bytes:
+    """Build the 1024-byte Fabrics Connect data structure.
+
+    ``host_id`` accepts a :class:`uuid.UUID` or UUID string. Both NQNs must
+    contain 11 through 223 non-NUL bytes when UTF-8 encoded.
+    """
     host_uuid = host_id if isinstance(host_id, uuid.UUID) else uuid.UUID(str(host_id))
     data = bytearray(1024)
     data[:16] = host_uuid.bytes
@@ -238,6 +304,7 @@ def connect_data(
 
 
 def fabrics_connect(qid: int, depth: int, data_buffer, kato_ms: int = 0) -> bytes:
+    """Build a Fabrics Connect command using ``data_buffer`` as its payload."""
     if kato_ms < 0 or kato_ms > 0xFFFFFFFF:
         raise ValueError("kato_ms must fit in uint32")
     command = _command(OPC_FABRICS)
@@ -248,6 +315,7 @@ def fabrics_connect(qid: int, depth: int, data_buffer, kato_ms: int = 0) -> byte
 
 
 def property_get(offset: int, size: int) -> bytes:
+    """Build a Fabrics Property Get command for a 4- or 8-byte register."""
     if size not in (4, 8):
         raise ValueError("property size must be 4 or 8 bytes")
     command = _command(OPC_FABRICS)
@@ -258,6 +326,7 @@ def property_get(offset: int, size: int) -> bytes:
 
 
 def property_set(offset: int, value: int, size: int = 4) -> bytes:
+    """Build a Fabrics Property Set command for a 4- or 8-byte register."""
     if size not in (4, 8):
         raise ValueError("property size must be 4 or 8 bytes")
     command = _command(OPC_FABRICS)
@@ -268,6 +337,12 @@ def property_set(offset: int, value: int, size: int = 4) -> bytes:
 
 
 def identify(data_buffer, *, nsid: int = 0, controller: bool = False) -> bytes:
+    """Build an Identify Controller or Identify Namespace command.
+
+    ``data_buffer`` must provide at least 4096 registered bytes. Pass
+    ``controller=True`` for controller data; otherwise ``nsid`` selects the
+    namespace.
+    """
     command = _command(OPC_IDENTIFY, nsid)
     set_keyed_sgl(command, data_buffer, 4096)
     command[40] = 1 if controller else 0
@@ -275,6 +350,7 @@ def identify(data_buffer, *, nsid: int = 0, controller: bool = False) -> bytes:
 
 
 def set_features(feature_id: int, value: int) -> bytes:
+    """Build a Set Features command with command-dword 11 ``value``."""
     command = _command(OPC_SET_FEATURES)
     struct.pack_into("<II", command, 40, int(feature_id), int(value))
     return bytes(command)
@@ -290,6 +366,12 @@ def rw_command(
     lba_size: int,
     buffer_offset: int = 0,
 ) -> bytes:
+    """Build one NVM Read or Write command with a keyed SGL.
+
+    A command may transfer 1 through 65536 logical blocks, subject to the
+    24-bit keyed-SGL length limit. Higher-level namespace I/O splits larger
+    transfers before calling this builder.
+    """
     if opcode not in (OPC_READ, OPC_WRITE):
         raise ValueError("opcode must be READ or WRITE")
     if slba < 0 or slba > (1 << 64) - 1:

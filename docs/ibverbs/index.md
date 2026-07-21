@@ -23,6 +23,18 @@ Use `ib.local_qp_info` and `ib.connect_rc` to exchange and apply the remote RC
 path information. The raw `QP.modify`, `QP.to_init`, `QP.to_rtr`, and
 `QP.to_rts` methods remain available when an application needs direct control.
 
+## Configuration and feature flags
+
+`QPInitAttr` controls transport type, CQs, optional SRQ, queue capacities, SGE
+and inline limits, and send signaling. The QP transition helpers document path
+MTU, access, retry, timeout, atomic-depth, and route options. `CMID.connect`
+separately exposes RDMA-CM private data, initiator/responder depth, and retry
+controls.
+
+The [API reference](api) documents every option and each member of
+`AccessFlags`, `QPAttrMask`, `SendFlags`, and `WCFlags`. Optional access modes
+and transports remain subject to provider and device support.
+
 ## Memory and GPU registration
 
 `ib.reg_tensor` registers contiguous NumPy arrays and CPU torch tensors while

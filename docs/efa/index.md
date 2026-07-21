@@ -25,6 +25,19 @@ Exchange `efa.local_endpoint_info(qp, qkey=0x1234).to_bytes()` out of band.
 Resolve the bytes received from the other process with
 `efa.EndpointInfo.from_bytes(...).peer(pd)`.
 
+## Configuration and feature flags
+
+`QPInitAttr` controls the send/receive CQs, queue capacities, SGE and inline
+limits, service level, send signaling, enabled extended send operations, and
+unsolicited-write support. Requested capacities are subject to provider and
+device limits. `Context.create_cq_ex` independently controls completion fields,
+sender-GID reporting, and unsolicited-write metadata.
+
+The [API reference](api) documents every option and each member of
+`AccessFlags`, `QPAttrMask`, `QPExSendOpsFlags`, `SendFlags`, `WCFlags`,
+`CreateCQWCFlags`, and `EfaDeviceCaps`. Capability bits must be tested before
+enabling their matching QP or CQ features.
+
 ## EFA peer rule
 
 Each SEND names a destination address handle, QP number, and qkey. For RDMA
