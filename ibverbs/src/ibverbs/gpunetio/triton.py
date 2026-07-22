@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from triton.language import core
+from triton.language import core  # pyre-ignore[21]: Optional dependency.
 
 from ._build import bitcode_path
 

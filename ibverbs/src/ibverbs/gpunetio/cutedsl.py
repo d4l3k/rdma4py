@@ -1,9 +1,14 @@
+# pyre-ignore-all-errors[11]: CuTe scalar objects are runtime annotations.
+
 """CuTe DSL FFI bindings for the GPUNetIO device bitcode ABI."""
 
 from dataclasses import dataclass
 
-from cutlass import Int32, Uint32, Uint64
-from cutlass.base_dsl.ffi import BitCode, extern
+from cutlass import Int32, Uint32, Uint64  # pyre-ignore[21]: Optional dependency.
+from cutlass.base_dsl.ffi import (  # pyre-ignore[21]: Optional dependency.
+    BitCode,
+    extern,
+)
 
 from ._build import bitcode_path
 

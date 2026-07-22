@@ -7,6 +7,7 @@ import ctypes.util
 import mmap
 import re
 import threading
+from typing import Any
 
 _HANDLERS = {
     "auto": 0,
@@ -308,6 +309,16 @@ class DeviceQP:
     path. Keep this object alive while kernels use :attr:`device_ptr`, and
     close it before closing the underlying ibverbs resources.
     """
+
+    _lib: Any = None
+    _gpu: Any = None
+    _exported: Any = None
+    _device: Any = None
+    _qp: Any = None
+    _mappings: Any = None
+    gpu_bus_id: str = ""
+    nic_handler: str = ""
+    cpu_proxy: bool = False
 
     def __init__(self):
         raise TypeError("use DeviceQP.export(qp, ...)")
