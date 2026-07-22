@@ -6,6 +6,8 @@
 
 High-performance RDMA for Python.
 
+Read the [PyTorch developer blog introduction to rdma4py](https://docs.pytorch.org/devlogs/distributed/2026-07-21-rdma4py/).
+
 Documentation for all packages is published at
 [d4l3k.github.io/rdma4py](https://d4l3k.github.io/rdma4py/).
 
