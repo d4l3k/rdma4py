@@ -24,6 +24,10 @@ cdef extern from "infiniband/verbs.h" nogil:
         pass
     cdef struct ibv_srq:
         pass
+    cdef struct ibv_wq:
+        pass
+    cdef struct ibv_dm:
+        pass
 
     # --- context / device ---
     cdef struct ibv_context:
@@ -249,3 +253,29 @@ cdef extern from "infiniband/verbs.h" nogil:
     int ibv_post_recv(ibv_qp *qp, ibv_recv_wr *wr, ibv_recv_wr **bad_wr)
     int ibv_post_srq_recv(ibv_srq *srq, ibv_recv_wr *recv_wr,
                           ibv_recv_wr **bad_recv_wr)
+
+
+cdef extern from "_mlx5dv_bridge.h" nogil:
+    cdef struct rdma4py_mlx5_qp_info:
+        void *sq_buf
+        uint32_t sq_wqe_cnt
+        uint32_t sq_stride
+        void *rq_buf
+        uint32_t rq_wqe_cnt
+        uint32_t rq_stride
+        uint32_t *sq_dbrec
+        uint32_t *rq_dbrec
+        uint64_t *uar
+        uint32_t uar_size
+
+    cdef struct rdma4py_mlx5_cq_info:
+        void *buf
+        uint32_t *dbrec
+        uint32_t cqe_cnt
+        uint32_t cqe_size
+        uint32_t cqn
+
+    int rdma4py_mlx5dv_qp_info(void *init_obj_fn, ibv_qp *qp,
+                                rdma4py_mlx5_qp_info *info)
+    int rdma4py_mlx5dv_cq_info(void *init_obj_fn, ibv_cq *cq,
+                                rdma4py_mlx5_cq_info *info)

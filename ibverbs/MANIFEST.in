@@ -1,3 +1,4 @@
 include README.md CLAUDE.md LICENSE MANIFEST.in pyproject.toml setup.py
-include src/ibverbs/*.pyx src/ibverbs/*.pxd
+include src/ibverbs/*.pyx src/ibverbs/*.pxd src/ibverbs/*.h
+include src/ibverbs/gpunetio/*.cu
 recursive-include tests *.py

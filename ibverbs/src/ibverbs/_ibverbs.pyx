@@ -73,6 +73,8 @@ ctypedef void (*fp_ack_async_event)(c.ibv_async_event *) noexcept nogil
 ctypedef const char *(*fp_str_from_int)(int) noexcept nogil
 
 cdef void *_libhandle = NULL
+cdef void *_mlx5_libhandle = NULL
+cdef void *_mlx5_init_obj = NULL
 cdef fp_get_device_list _v_get_device_list = NULL
 cdef fp_free_device_list _v_free_device_list = NULL
 cdef fp_get_device_name _v_get_device_name = NULL
@@ -107,6 +109,20 @@ cdef fp_get_async_event _v_get_async_event = NULL
 cdef fp_ack_async_event _v_ack_async_event = NULL
 cdef fp_str_from_int _v_event_type_str = NULL
 cdef fp_str_from_int _v_wc_status_str = NULL
+
+
+cdef void *_load_mlx5dv_init_obj() except NULL:
+    """Load the one mlx5 direct-verbs symbol used by GPUNetIO."""
+    global _mlx5_libhandle, _mlx5_init_obj
+    if _mlx5_init_obj is not NULL:
+        return _mlx5_init_obj
+    _mlx5_libhandle = dlopen(b"libmlx5.so.1", RTLD_NOW | RTLD_LOCAL)
+    if _mlx5_libhandle is NULL:
+        raise RuntimeError("libmlx5.so.1 is required for the GPUNetIO bridge")
+    _mlx5_init_obj = dlsym(_mlx5_libhandle, b"mlx5dv_init_obj")
+    if _mlx5_init_obj is NULL:
+        raise RuntimeError("libmlx5.so.1 does not export mlx5dv_init_obj")
+    return _mlx5_init_obj
 
 
 # librdmacm is optional for base verbs users and loaded only when CM is used.
@@ -867,6 +883,8 @@ cdef class Context:
         cdef CQ cq = CQ.__new__(CQ)
         cq.context = self
         cq.channel = ch
+        cq._external_datapath = False
+        cq._external_users = 0
         cq._cq = _v_create_cq(self._ctx, cqe, <void*>cq, chp, comp_vector)
         if cq._cq is NULL:
             _fail("ibv_create_cq")
@@ -1274,6 +1292,8 @@ cdef class CQ:
     cdef readonly Context context
     cdef readonly CompChannel channel
     cdef int _unacked
+    cdef bint _external_datapath
+    cdef int _external_users
 
     cdef int _ensure(self) except -1:
         if self._cq is NULL:
@@ -1289,6 +1309,10 @@ cdef class CQ:
     def poll(self, int num_entries) -> list:
         """Poll up to ``num_entries`` completions; return a list of :class:`WC`."""
         self._ensure()
+        if self._external_datapath:
+            raise VerbsError(
+                "ibv_poll_cq", EBUSY,
+                "CQ consumer state is owned by an external GPU data path")
         if num_entries <= 0:
             raise ValueError("num_entries must be positive")
         cdef c.ibv_wc *wcs = <c.ibv_wc*>calloc(num_entries, sizeof(c.ibv_wc))
@@ -1312,6 +1336,10 @@ cdef class CQ:
     def req_notify(self, bint solicited_only=False):
         """Request a completion notification on the CQ's channel."""
         self._ensure()
+        if self._external_datapath:
+            raise VerbsError(
+                "ibv_req_notify_cq", EBUSY,
+                "CQ consumer state is owned by an external GPU data path")
         cdef int rc = c.ibv_req_notify_cq(
             self._cq, 1 if solicited_only else 0)
         if rc != 0:
@@ -1331,6 +1359,10 @@ cdef class CQ:
         """Destroy this completion queue."""
         cdef int rc
         if self._cq is not NULL:
+            if self._external_users != 0:
+                raise VerbsError(
+                    "ibv_destroy_cq", EBUSY,
+                    "close the active external GPU data path first")
             if self._unacked > 0:
                 _v_ack_cq_events(self._cq, <unsigned int>self._unacked)
                 self._unacked = 0
@@ -1424,6 +1456,8 @@ cdef class QP:
     cdef int _port
     cdef cm.rdma_cm_id *_cm_id
     cdef object _cm_owner
+    cdef bint _external_datapath
+    cdef int _external_users
 
     cdef int _ensure(self) except -1:
         if self._qp is NULL:
@@ -1441,6 +1475,8 @@ cdef class QP:
         self._port = 1
         self._cm_id = NULL
         self._cm_owner = None
+        self._external_datapath = False
+        self._external_users = 0
         return self
 
     @property
@@ -1454,6 +1490,106 @@ cdef class QP:
         """Return this queue pair's transport type."""
         self._ensure()
         return self._qp.qp_type
+
+    def _mlx5dv_bridge_info(self):
+        """Transfer queue ownership and return mlx5 metadata for GPUNetIO."""
+        self._ensure()
+        if self._external_datapath:
+            raise VerbsError(
+                "mlx5dv_init_obj", EBUSY,
+                "queue pair already has an external data path")
+        if self._qp.qp_type != _QPT_RC:
+            raise ValueError("the GPUNetIO bridge currently requires an RC QP")
+        if self.srq is not None:
+            raise ValueError("the GPUNetIO bridge does not support SRQ-backed QPs")
+        if self.send_cq._external_datapath or self.recv_cq._external_datapath:
+            raise VerbsError(
+                "mlx5dv_init_obj", EBUSY,
+                "a queue-pair CQ already has an external data path")
+
+        cdef void *init_obj = _load_mlx5dv_init_obj()
+        cdef c.rdma4py_mlx5_qp_info qi
+        cdef c.rdma4py_mlx5_cq_info sci
+        cdef c.rdma4py_mlx5_cq_info rci
+        cdef int rc
+        memset(&qi, 0, sizeof(qi))
+        memset(&sci, 0, sizeof(sci))
+        memset(&rci, 0, sizeof(rci))
+        rc = c.rdma4py_mlx5dv_qp_info(init_obj, self._qp, &qi)
+        if rc != 0:
+            _fail_rc("mlx5dv_init_obj(QP)", rc)
+        rc = c.rdma4py_mlx5dv_cq_info(
+            init_obj, self.send_cq._cq, &sci)
+        if rc != 0:
+            _fail_rc("mlx5dv_init_obj(send CQ)", rc)
+        if self.recv_cq is self.send_cq:
+            rci = sci
+        else:
+            rc = c.rdma4py_mlx5dv_cq_info(
+                init_obj, self.recv_cq._cq, &rci)
+            if rc != 0:
+                _fail_rc("mlx5dv_init_obj(recv CQ)", rc)
+
+        if qi.sq_wqe_cnt > 0xFFFF or qi.rq_wqe_cnt > 0xFFFF:
+            raise ValueError("GPUNetIO supports at most 65535 WQEs per queue")
+        if (qi.sq_buf is NULL or qi.rq_buf is NULL or qi.sq_dbrec is NULL
+                or qi.rq_dbrec is NULL or qi.uar is NULL
+                or sci.buf is NULL or sci.dbrec is NULL
+                or rci.buf is NULL or rci.dbrec is NULL):
+            raise VerbsError(
+                "mlx5dv_init_obj", EIO,
+                "mlx5 did not expose all queue mappings required by GPUNetIO")
+
+        self._external_datapath = True
+        self.send_cq._external_datapath = True
+        self.recv_cq._external_datapath = True
+
+        # mlx5dv_init_obj transfers CQ consumer-index ownership to the caller.
+        # The provider's CPU posting/polling state cannot be resynchronized, so
+        # ownership remains external until these objects are destroyed.
+        return {
+            "sq_qpn": int(self._qp.qp_num),
+            "sq_wqe_addr": int(<uintptr_t>qi.sq_buf),
+            "sq_wqe_num": int(qi.sq_wqe_cnt),
+            "sq_wqe_stride": int(qi.sq_stride),
+            "sq_dbrec": int(<uintptr_t>qi.sq_dbrec),
+            "sq_db": int(<uintptr_t>qi.uar),
+            "uar_size": int(qi.uar_size),
+            "sq_cqn": int(sci.cqn),
+            "sq_cqe_addr": int(<uintptr_t>sci.buf),
+            "sq_cqe_num": int(sci.cqe_cnt),
+            "sq_cqe_size": int(sci.cqe_size),
+            "sq_cq_dbrec": int(<uintptr_t>sci.dbrec),
+            "rq_qpn": int(self._qp.qp_num),
+            "rq_wqe_addr": int(<uintptr_t>qi.rq_buf),
+            "rq_wqe_num": int(qi.rq_wqe_cnt),
+            "rq_dbrec": int(<uintptr_t>qi.rq_dbrec),
+            "rcv_wqe_size": int(qi.rq_stride),
+            "rq_cqn": int(rci.cqn),
+            "rq_cqe_addr": int(<uintptr_t>rci.buf),
+            "rq_cqe_num": int(rci.cqe_cnt),
+            "rq_cqe_size": int(rci.cqe_size),
+            "rq_cq_dbrec": int(<uintptr_t>rci.dbrec),
+        }
+
+    def _acquire_external_datapath(self):
+        """Retain native resources while an exported device handle is active."""
+        self._ensure()
+        if not self._external_datapath:
+            raise VerbsError("GPUNetIO export", EIO, "QP is not externally owned")
+        self._external_users += 1
+        self.send_cq._external_users += 1
+        if self.recv_cq is not self.send_cq:
+            self.recv_cq._external_users += 1
+
+    def _release_external_datapath(self):
+        """Release a GPUNetIO device handle's native-resource references."""
+        if self._external_users <= 0:
+            raise RuntimeError("external GPU data path is not active")
+        self._external_users -= 1
+        self.send_cq._external_users -= 1
+        if self.recv_cq is not self.send_cq:
+            self.recv_cq._external_users -= 1
 
     @property
     def state(self) -> int:
@@ -1647,6 +1783,10 @@ cdef class QP:
     def post_send(self, wrs):
         """Post one or more :class:`SendWR` to the send queue."""
         self._ensure()
+        if self._external_datapath:
+            raise VerbsError(
+                "ibv_post_send", EBUSY,
+                "queue state is owned by an external GPU data path")
         if isinstance(wrs, SendWR):
             wrs = [wrs]
         elif not isinstance(wrs, list):
@@ -1656,6 +1796,10 @@ cdef class QP:
     def post_recv(self, wrs):
         """Post one or more :class:`RecvWR` to the receive queue."""
         self._ensure()
+        if self._external_datapath:
+            raise VerbsError(
+                "ibv_post_recv", EBUSY,
+                "queue state is owned by an external GPU data path")
         if isinstance(wrs, RecvWR):
             wrs = [wrs]
         elif not isinstance(wrs, list):
@@ -1666,6 +1810,10 @@ cdef class QP:
         """Destroy this queue pair."""
         cdef int rc
         if self._qp is not NULL:
+            if self._external_users != 0:
+                raise VerbsError(
+                    "ibv_destroy_qp", EBUSY,
+                    "close the active external GPU data path first")
             if self._cm_id is not NULL:
                 _cm_destroy_qp(self._cm_id)
                 self._cm_id = NULL

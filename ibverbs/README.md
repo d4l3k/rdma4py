@@ -169,6 +169,109 @@ require contiguous, non-empty tensors; split any single SGE larger than
 `2**32 - 1` bytes into multiple entries. `tests/test_gpudirect.py` performs real
 GPU-to-GPU RDMA writes, reads, and sends verified with `torch.equal`.
 
+## GPU-initiated communication with GPUNetIO
+
+`ibverbs.gpunetio` exports a connected mlx5 RC QP to NVIDIA DOCA GPUNetIO and
+provides one device ABI for CUDA-derived kernels. Triton and CuTe DSL both link
+the same architecture-specific LLVM bitcode, so WQE construction, doorbells,
+and completion polling execute on the GPU without calling host libibverbs.
+
+Install the framework adapter you use, plus the DOCA GPUNetIO runtime and
+development headers from NVIDIA's DOCA repository:
+
+```bash
+pip install "ibverbs[gpunetio-triton]"
+# or
+pip install "ibverbs[gpunetio-cutedsl]"
+```
+
+Build the device library once for the target architecture. This requires
+`clang++`, CUDA headers, and `doca-sdk-gpunetio-devel`:
+
+```python
+from ibverbs.gpunetio import build_bitcode
+
+build_bitcode(arch="sm_90")  # cached under ~/.cache/rdma4py/gpunetio/
+```
+
+Connect and register memory before exporting the QP. The QP and both CQs must
+be fresh, with no posted work or completions. Export permanently gives their
+consumer and producer state to the external data path; do not call
+`post_send`, `post_recv`, or `poll` on those objects afterward. Make the target
+GPU's CUDA context current before export and keep it current while closing the
+device handle. Synchronize all kernels before `DeviceQP.close()`.
+
+```python
+from ibverbs.gpunetio import DeviceQP
+
+device_qp = DeviceQP.export(qp, gpu=0)  # requires a direct GPU doorbell
+qp_ptr = device_qp.device_ptr
+```
+
+Triton functions accept integer device addresses and keys. Cast scalar kernel
+arguments to the exact unsigned widths shown here:
+
+```python
+import triton
+import triton.language as tl
+from ibverbs.gpunetio import triton as gda
+
+@triton.jit
+def write_kernel(qp, remote, rkey, local, lkey, length, status):
+    ticket = gda.put(
+        tl.cast(qp, tl.uint64), tl.cast(remote, tl.uint64),
+        tl.cast(rkey, tl.uint32), tl.cast(local, tl.uint64),
+        tl.cast(lkey, tl.uint32), tl.cast(length, tl.uint64))
+    tl.store(status, gda.wait_send(tl.cast(qp, tl.uint64), ticket))
+
+write_kernel[(1,)](
+    qp_ptr, peer_addr, peer_rkey, local_addr, local_lkey, nbytes, status,
+    num_warps=1, extern_libs=gda.external_libraries())
+```
+
+CuTe DSL binds the same functions directly through its bitcode FFI:
+
+```python
+from cutlass import Uint32, Uint64, cute
+from ibverbs.gpunetio.cutedsl import bind
+
+gda = bind()
+
+@cute.kernel
+def write_kernel(qp: Uint64, remote: Uint64, rkey: Uint32,
+                 local: Uint64, lkey: Uint32, length: Uint64):
+    ticket = gda.put(qp, remote, rkey, local, lkey, length)
+    gda.wait_send(qp, ticket)
+```
+
+The initial ABI includes RDMA Write/Read, Send/Receive, blocking completion
+waits, and one-shot completion tests. `get_mcst` and `wait_recv_mcst` add the
+DOCA dump-WQE memory-consistency sequence required on pre-Hopper GPUs; their
+dump address must name at least one registered writable byte. Transfer lengths
+must be positive, and a Receive is limited to `2**32 - 1` bytes.
+
+The wrapper is deliberately hardware-specific:
+
+| Component | Supported target |
+|-----------|------------------|
+| GPU | NVIDIA SM80 or newer data-center GPUs; SM90/Hopper tested |
+| NIC | ConnectX-6 Dx or newer; BlueField-2/3 in NIC mode |
+| Transport | mlx5 RC QPs, fixed 64-byte SQ/CQE and 16-byte RQ layout, no SRQ |
+| Software | DOCA GPUNetIO 3.4 bridge ABI and a matching rdma-core/libmlx5 |
+
+Ampere uses the `get_mcst` / `wait_recv_mcst` variants for inbound visibility;
+Hopper and newer can use `get` / `wait_recv`. The bridge relies on mlx5 direct
+verbs, CUDA host registration of provider queue memory, and NVIDIA's MMIO
+doorbell mapping. It is not a portable implementation for non-mlx5 NICs or
+AMD/Intel GPUs. GPUNetIO Verbs and its bridge API are experimental DOCA APIs,
+so a new DOCA release may require an ABI update here.
+
+`DeviceQP.export(..., nic_handler="auto")` permits DOCA's CPU-proxy fallback
+and exposes `DeviceQP.progress()`, but the default `"gpu"` mode fails rather
+than silently putting the CPU back on the critical path. CPU-proxy mode needs a
+host thread to call `progress()` while a kernel can be posting work. The GPU and
+NIC should also have a GPUDirect-friendly PCIe path for useful performance.
+
 ## Feature coverage
 
 | Area | Supported |
@@ -184,6 +287,7 @@ GPU-to-GPU RDMA writes, reads, and sends verified with `torch.equal`.
 | Async events | ✅ `get_async_event` / `ack_async_event`, `async_fd` |
 | Connection helpers | ✅ `QPInfo`, `local_qp_info`, `connect_rc` |
 | RDMA connection manager | ✅ `CMID.resolve/create_qp/connect/disconnect` |
+| GPU-initiated mlx5 data path | ✅ optional DOCA GPUNetIO bridge for Triton / CuTe DSL |
 
 Out of scope for v1 (candidates for later): the extended `ibv_wr_*` / `qp_ex`
 post API, device memory (`ibv_alloc_dm`), memory windows, and flow steering.

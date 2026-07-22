@@ -29,6 +29,8 @@ version = { attr = "ibverbs._version.__version__" }
 [project.optional-dependencies]
 test = ["pytest>=7", "numpy"]
 gpu = ["torch"]
+gpunetio-triton = ["triton>=3.2"]
+gpunetio-cutedsl = ["nvidia-cutlass-dsl>=4.6"]
 
 [project.urls]
 Documentation = "https://d4l3k.github.io/rdma4py/ibverbs/"
@@ -41,6 +43,9 @@ include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"ibverbs.gpunetio" = ["_device.cu"]
 
 [tool.pytest.ini_options]
 markers = [
